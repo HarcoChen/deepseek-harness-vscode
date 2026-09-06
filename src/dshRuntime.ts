@@ -1430,13 +1430,23 @@ export class DshRuntime implements vscode.Disposable {
     }
 
     /** Report whether the composed Runtime can open a Session workspace path. */
-    public canOpenWorkspacePath(signal?: AbortSignal): Promise<boolean> {
-        return this.apiClient.call("session/canOpenWorkspacePath", {}, signal);
+    public async canOpenWorkspacePath(signal?: AbortSignal): Promise<boolean> {
+        const value = await this.apiClient.call<unknown>("session/canOpenWorkspacePath", {}, signal);
+        if (typeof value !== "boolean") {
+            throw new RemoteProtocolError("Remote session/canOpenWorkspacePath returned an invalid value");
+        }
+        return value;
     }
 
     /** Open a Session-aware path through the Runtime's native opener. */
-    public openWorkspacePath(path: string, signal?: AbortSignal): Promise<{ opened: true }> {
-        return this.apiClient.call("session/openWorkspacePath", { request: { path } }, signal);
+    public async openWorkspacePath(path: string, signal?: AbortSignal): Promise<{ opened: true }> {
+        const value = await this.apiClient.call<unknown>("session/openWorkspacePath", {
+            request: { path },
+        }, signal);
+        if (!isRemoteRecord(value) || value.opened !== true) {
+            throw new RemoteProtocolError("Remote session/openWorkspacePath returned an invalid value");
+        }
+        return { opened: true };
     }
 
     /** Pick a directory when the Runtime composes a native picker capability. */

@@ -1085,6 +1085,42 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         await vscode.env.openExternal(vscode.Uri.parse(url));
     }
 
+    /**
+     * Open a generated file location in the local editor when it belongs to
+     * this workspace. Remote deployments may own the Session cwd on another
+     * filesystem, so fall back to the public Session opener only after the
+     * local, bounded path check has failed and the Host advertises support.
+     */
+    private async openFileLocation(
+        location: Extract<ChatViewAction, { type: "openFileLocation" }>,
+    ): Promise<void> {
+        try {
+            await openWorkspaceFileLocation(
+                location,
+                this.sessionCwd ?? this.workspaceRoot(),
+            );
+            return;
+        } catch (localError) {
+            if (!this.runtime.getUrl()) throw localError;
+            let canOpen = this.runtime.getHostDescription()?.canOpenPath;
+            if (canOpen === undefined) {
+                try {
+                    canOpen = await this.runtime.canOpenWorkspacePath();
+                } catch {
+                    throw localError;
+                }
+            }
+            if (!canOpen) throw localError;
+            try {
+                await this.runtime.openWorkspacePath(location.path);
+            } catch {
+                // Preserve the local diagnostic when the remote opener also
+                // rejects the path; its failure is only a fallback attempt.
+                throw localError;
+            }
+        }
+    }
+
     public dispose(): void {
         this.viewMessageDisposable?.dispose();
         if (this.stateUpdateTimer) clearTimeout(this.stateUpdateTimer);
@@ -1205,10 +1241,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     break;
                 }
                 case "openFileLocation":
-                    await openWorkspaceFileLocation(
-                        message,
-                        this.sessionCwd ?? this.workspaceRoot(),
-                    );
+                    await this.openFileLocation(message);
                     break;
                 case "copyCode":
                     await this.copyCodeBlock(message.renderId, message.codeBlockId);

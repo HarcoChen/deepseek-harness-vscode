@@ -18,7 +18,9 @@ prompt）。第 8 步的版本发布用 `npm run release` 执行，CHANGELOG
 组合做严格快照校验，设置面板提供全局/会话分组、生命周期相位、搜索和手动刷新；
 仍保持只读，不凭空添加插件管理动作。随后接入 dynamic Cordis Host 面板：
 inventory、停止、移除和拒绝待批准请求，Client half 继续交给 Harness Web UI。
-消息反馈 sidecar 的 Host CAS 骨架也已接回 Webview，支持点赞/点踩、备注和冲突/降级呈现。
+消息反馈 sidecar 的 Host CAS 骨架也已接回 Webview，支持点赞/点踩、备注和冲突/降级呈现；
+文件位置跳转在本地边界检查失败且 Host 宣布 `canOpenPath` 时回落到
+`session/openWorkspacePath`，为远程工作区保留公开协议路径。
 
 下方「契约基线」已按 `dsh-v0.1.2-rc.1` 与当前实现更新；`RPC_new.md` 与
 `RPC_ADAPTATION_PLAN.md` 仍保留为迁移审计和版本升级门禁。下次升级先按其 §14
@@ -140,7 +142,10 @@ subagentTiming、modelSelection、turnOutline、schedule）；且
 - [ ] **GUI 启动 PATH 发现**：覆盖 macOS Finder/Dock、Linux Desktop 和 Windows npm 全局 bin 路径缺失场景，日志中说明最终使用的可执行文件。
 - [ ] **多根工作区 Runtime 归属**：根据活动编辑器选择 cwd，明确每个 session 对应的 workspace folder，切换时不误停其他窗口复用的 Runtime。
 - [ ] **远程工作区支持评估**：验证 Remote SSH、WSL、Dev Container 下 Extension Host、Runtime 和文件系统是否位于同侧；需要时使用 VS Code 端口转发。
-      此场景下 `host.pickDirectory` / `listDirectory` / `createDirectory` / `openPath` 四条未消费 RPC 是现成解法 —— 本地场景与 VS Code 原生 API 重复，仅远程场景值得接。
+      文件位置点击现已在本地边界检查失败时回落到 `session/openWorkspacePath`；剩余
+      `directoryPicker/pick` / `directoryPicker/list` / `directoryPicker/createDirectory` 三条目录选择 RPC
+      尚未接入专用 picker。需在 Remote SSH/WSL/Dev Container 实机确认 Extension Host、
+      Runtime 与文件系统同侧性后，再决定是否增加远程目录浏览 UI（本地场景与 VS Code 原生 API 重复）。
 - [ ] **异常退出恢复**：检测扩展启动的 Runtime 意外退出，提供有限次数的退避重启，并避免接管或终止用户自行启动的实例。
 - [ ] **rc2 兼容性回归**：验证 V4 Vision、Files API 图片复用、Windows PTY 与沙箱修复；不新增单元测试，使用现有检查与手动 smoke 流程。
 
