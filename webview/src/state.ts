@@ -47,6 +47,7 @@ export type ActivityDockState = Pick<
     | "subagentPreview"
     | "jobs"
     | "todos"
+    | "schedule"
     | "permissions"
     | "commands"
     | "sessionId"

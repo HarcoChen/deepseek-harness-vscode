@@ -6,10 +6,11 @@ import { GoalPanel } from "./GoalPanel";
 import { JobsPanel } from "./JobsPanel";
 import { PermissionsPanel } from "./PermissionsPanel";
 import { QueuePanel } from "./QueuePanel";
+import { SchedulePanel } from "./SchedulePanel";
 import { SubagentsPanel } from "./SubagentsPanel";
 import { TodosPanel } from "./TodosPanel";
 
-type DockTab = "todos" | "goal" | "queue" | "changes" | "subagents" | "jobs" | "permissions";
+type DockTab = "todos" | "goal" | "queue" | "changes" | "subagents" | "jobs" | "schedule" | "permissions";
 
 interface TabDef {
     id: DockTab;
@@ -25,6 +26,7 @@ interface ActivityDockProps {
     subagentPreview: ActivityDockState["subagentPreview"];
     jobs: ActivityDockState["jobs"];
     todos: ActivityDockState["todos"];
+    schedule: ActivityDockState["schedule"];
     permissions: ActivityDockState["permissions"];
     commands: ActivityDockState["commands"];
     sessionId: ActivityDockState["sessionId"];
@@ -40,6 +42,7 @@ export const ActivityDock = React.memo(function ActivityDock({
     subagentPreview,
     jobs,
     todos,
+    schedule,
     permissions,
     commands,
     sessionId,
@@ -67,6 +70,7 @@ export const ActivityDock = React.memo(function ActivityDock({
         tabs.push({ id: "subagents", label: t("Subagents"), count: subagents.nodes.length || undefined });
     }
     if (jobs.length) tabs.push({ id: "jobs", label: "Jobs", count: jobs.length });
+    if (schedule?.length) tabs.push({ id: "schedule", label: t("Schedule"), count: schedule.length });
     if (permissions) tabs.push({ id: "permissions", label: t("Permissions") });
 
     const available = tabs.map((tab) => tab.id).join(",");
@@ -160,6 +164,7 @@ export const ActivityDock = React.memo(function ActivityDock({
                     {!collapsed && selectedTab === "changes" && tab.id === "changes" ? <ChangesPanel reviews={changeReviews} running={sessionRunning} /> : null}
                     {!collapsed && selectedTab === "subagents" && tab.id === "subagents" && subagents ? <SubagentsPanel tree={subagents} preview={preview} /> : null}
                     {!collapsed && selectedTab === "jobs" && tab.id === "jobs" ? <JobsPanel jobs={jobs} /> : null}
+                    {!collapsed && selectedTab === "schedule" && tab.id === "schedule" && schedule ? <SchedulePanel schedule={schedule} /> : null}
                     {!collapsed && selectedTab === "permissions" && tab.id === "permissions" && permissions ? <PermissionsPanel permissions={permissions} switchable={canSwitchPermissions(commands)} /> : null}
                 </div>
             ))}

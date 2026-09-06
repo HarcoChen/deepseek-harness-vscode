@@ -52,6 +52,7 @@ import {
     presentSettingsPanel,
     settingsMutationOps,
     reasoningEffortOptions,
+    scheduleProjection,
     sessionStatsProjection,
     todoProjection,
 } from "./chatViewPresentation";
@@ -3406,6 +3407,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         const goalCell = projectionCell(session, "goal");
         const permissionsCell = projectionCell(session, "permissions");
         const todos = todoProjection(projectionValue(session, "todos"));
+        const schedule = scheduleProjection(projectionValue(session, "schedule"));
         const imageLimits = imageLimitsProjection(projectionValue(session, "imageLimits"));
         const plan = planProjection(projectionValue(session, "plan"));
         const sessionStats = sessionStatsProjection(projectionValue(session, "sessionStats"));
@@ -3499,6 +3501,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             reasoningEffort: this.reasoningEffortView(),
             permissions: permissionProjection(permissionsCell?.value),
             ...(todos === undefined ? {} : { todos }),
+            ...(schedule === undefined ? {} : { schedule }),
             ...(imageLimits === undefined ? {} : { imageLimits }),
             ...(plan === undefined ? {} : { plan }),
             interactions: activeInteractions.map((interaction) =>

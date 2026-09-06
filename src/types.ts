@@ -1045,6 +1045,7 @@ export interface ChatViewState {
     reasoningEffort?: ReasoningEffortView;
     permissions?: PermissionProjectionView;
     todos?: DshTodoItemView[];
+    schedule?: DshScheduleItem[];
     imageLimits?: DshImageLimitsView;
     plan?: DshPlanProjection;
     messageFeedback?: DshMessageFeedbackStateView;
@@ -1092,6 +1093,29 @@ export interface DshTodoItemView {
     content: string;
     status: "pending" | "in_progress" | "completed";
 }
+
+/** Active reminder record projected by the Runtime Schedule package. */
+export type DshScheduleItem =
+    | {
+          id: string;
+          kind: "after";
+          prompt: string;
+          afterSeconds: number;
+          scheduledAt: string;
+      }
+    | {
+          id: string;
+          kind: "at";
+          prompt: string;
+          scheduledAt: string;
+      }
+    | {
+          id: string;
+          kind: "every";
+          prompt: string;
+          everySeconds: number;
+          scheduledAt: string;
+      };
 
 export interface ChangeReviewView {
     turn: number;

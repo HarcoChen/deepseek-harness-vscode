@@ -10,6 +10,7 @@ import {
     DshSettingsNamespaceView,
     DshSettingsPanelView,
     DshSettingsPathOperation,
+    DshScheduleItem,
     DshTodoItemView,
     PermissionProjectionView,
     SessionStatsView,
@@ -279,6 +280,63 @@ export function todoProjection(value: unknown): DshTodoItemView[] | undefined {
         todos.push({ content: candidate.content, status: candidate.status });
     }
     return todos;
+}
+
+const SCHEDULE_UTC_INSTANT = /^(?!0000)\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/u;
+const MAX_SCHEDULE_ITEMS = 200;
+
+function scheduleInstant(value: unknown): string | undefined {
+    if (typeof value !== "string" || !SCHEDULE_UTC_INSTANT.test(value)) return undefined;
+    const epoch = Date.parse(value);
+    if (!Number.isFinite(epoch)) return undefined;
+    try {
+        return new Date(epoch).toISOString() === value ? value : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+function scheduleText(value: unknown): string | undefined {
+    return typeof value === "string" && value.length > 0 && value.trim() === value
+        ? value
+        : undefined;
+}
+
+function scheduleId(value: unknown): string | undefined {
+    return scheduleText(value);
+}
+
+function scheduleSeconds(value: unknown, minimum: number): number | undefined {
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum ? value : undefined;
+}
+
+/** Narrow the Schedule projection while retaining the Runtime's active order. */
+export function scheduleProjection(value: unknown): DshScheduleItem[] | undefined {
+    if (!Array.isArray(value) || value.length > MAX_SCHEDULE_ITEMS) return undefined;
+    const schedules: DshScheduleItem[] = [];
+    const seenIds = new Set<string>();
+    for (const candidate of value) {
+        if (!isRecord(candidate)) return undefined;
+        const id = scheduleId(candidate.id);
+        const prompt = scheduleText(candidate.prompt);
+        const scheduledAt = scheduleInstant(candidate.scheduledAt);
+        if (id === undefined || prompt === undefined || scheduledAt === undefined || seenIds.has(id)) return undefined;
+        seenIds.add(id);
+        if (candidate.kind === "after") {
+            const afterSeconds = scheduleSeconds(candidate.afterSeconds, 1);
+            if (afterSeconds === undefined) return undefined;
+            schedules.push({ id, kind: "after", prompt, afterSeconds, scheduledAt });
+        } else if (candidate.kind === "at") {
+            schedules.push({ id, kind: "at", prompt, scheduledAt });
+        } else if (candidate.kind === "every") {
+            const everySeconds = scheduleSeconds(candidate.everySeconds, 300);
+            if (everySeconds === undefined) return undefined;
+            schedules.push({ id, kind: "every", prompt, everySeconds, scheduledAt });
+        } else {
+            return undefined;
+        }
+    }
+    return schedules;
 }
 
 export function imageLimitsProjection(value: unknown): DshImageLimitsView | undefined {
