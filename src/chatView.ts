@@ -890,11 +890,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return this.sessionId;
     }
 
-    public revealConversationMilestone(seq: number): void {
+    public async revealConversationMilestone(seq: number): Promise<void> {
         if (!Number.isSafeInteger(seq) || seq < 0) return;
         this.reveal();
         if (!this.view || !this.webviewReady) return;
-        void this.view.webview.postMessage({ type: "revealMessage", seq });
+        const sessionId = this.sessionId;
+        let targetSeq = this.conversationRevealTarget(seq);
+        if (targetSeq === undefined && sessionId) {
+            // turnOutline anchors at `turn/start`, which is not itself a
+            // rendered message. Rebaseline once so an unloaded turn can still
+            // resolve to its first visible surface node before scrolling.
+            await this.runtime.syncSession(sessionId);
+            targetSeq = this.conversationRevealTarget(seq);
+        }
+        if (!this.view || !this.webviewReady) return;
+        void this.view.webview.postMessage({ type: "revealMessage", seq: targetSeq ?? seq });
+    }
+
+    private conversationRevealTarget(seq: number): number | undefined {
+        const snapshot = this.sessionId
+            ? this.runtime.getSessionStore().get(this.sessionId)
+            : undefined;
+        if (!snapshot) return undefined;
+        const exact = snapshot.surface.nodes.find((node) => node.seq === seq);
+        if (exact) return exact.seq;
+
+        const outline = snapshot.projections.find((cell) => cell.key === "turnOutline")?.value;
+        if (!Array.isArray(outline) || !outline.some((candidate) =>
+            isRecord(candidate) && candidate.seq === seq,
+        )) return undefined;
+        return snapshot.surface.nodes.find((node) => node.seq > seq)?.seq;
     }
 
     public async openBrowser(): Promise<void> {

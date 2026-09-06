@@ -66,8 +66,9 @@ projection 集合由当前 Loader composition 决定，不再用旧版固定总�
   `GenericProjectionStore`，未消费的 key 仍会到达并缓存。当前 UI 消费
   `goal`、`todos`、`tokenUsage`、`contextPressure`、`contextBreakdown`、
   `title`、`sessionStats`、`permissions`、`imageLimits`、`plan`、
-  `subagentTiming` 与 `modelSelection`；其中 `modelSelection` 已按 projection
-  变化实时更新模型/推理强度状态，`turnOutline`、`schedule` 等仍是下方待消费项。
+  `subagentTiming`、`modelSelection` 与 `turnOutline`；其中 `modelSelection` 已按
+  projection 变化实时更新模型/推理强度状态，`turnOutline` 已驱动对话导航，
+  `schedule` 等仍是下方待消费项。
 - **Typert Gateway capability**：`commands/list|execute`、
   `fileReferences/list`、`sessionReferenceResolver/candidates` 已由 UI/Runtime
   消费；文件与会话引用在 404/旧 Runtime 时回退本地候选。`messageFeedback` 仍
@@ -91,17 +92,12 @@ projection 集合由当前 Loader composition 决定，不再用旧版固定总�
 适配完成后（上一节），RC Remote 的消费面盘点：18 个下行事件已消费 12 个
 （catalog 6 个 + approval/question waterfall 2 个 + chatView 失效刷新 4 个，
 未消费的 6 个 `cordis/*` 见下）；已注册 session
-projection 已消费 12 个 key（goal、todos、tokenUsage、contextPressure、
+projection 已消费 13 个 key（goal、todos、tokenUsage、contextPressure、
 contextBreakdown、title、sessionStats、permissions、imageLimits、plan、
-subagentTiming、modelSelection）；且
+subagentTiming、modelSelection、turnOutline）；且
 `GenericProjectionStore` 本就缓存全部 projection —— 以下多数条目是**纯呈现层
 工作**，不动传输。按性价比排序：
 
-- [ ] **对话大纲投影（`turnOutline`）**：`{turns: [{turn, seq, prompt, response}], draft}`
-      （`dsh-v0.1.2-rc.1:packages/session/session-turn-outline/src/projection.ts:86`）。
-      上游特意为「翻页窗口之外的 turn」提供宿主权威大纲——现有 conversationNavigation
-      TreeView 已有基于本地已加载 surface 的导航，但尚未消费该 projection；对齐后大纲在
-      长会话翻页时才不会缺行。
 - [ ] **定时提醒只读面板（`schedule`）**：active reminders `{prompt, afterSeconds|everySeconds, scheduledAt}`
       （`dsh-v0.1.2-rc.1:packages/schedule/schedule/src/projection.ts:70`）。创建只在
       agent 侧 tools（`schedule/src/tools.ts`），IDE 只读展示 + 失效重拉，不做伪造创建入口。
