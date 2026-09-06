@@ -39,20 +39,20 @@ i18n 重复 key），否则都会作为运行时坏包发出——这是它最�
 `tracePanel` 的 425 行内联 UI 已迁完（966 → 611 行），仓库中不再有未经类型检查
 的 UI 代码——这是本轮两处基础设施改动（webview typecheck、资源管线）合起来的结果。
 
-**尚未起头的大项**：4 处超长函数提取、Gateway 通道及其依赖的两个功能。
-这些需要成块的时间，没有起头，不是做了一半。
+**当时尚未起头的大项（历史记录）**：4 处超长函数提取、Gateway 通道及其依赖的两个功能。
+这些需要成块的时间；随后 RC Remote 迁移已在 2026-09-06 完成，剩余是验收与功能消费。
 
 **需要人工验证**：Trace 面板无测试覆盖，迁移后的行为我无法目视确认，
 验证清单写在「重构 → 结构」该条目里。
 
-## 契约基线（2026-08-26 复核）
+## 契约基线（历史快照：2026-08-26）
 
-上游 checkout 已更新至 `0.1.1-rc.2`，与 `dsh.runtimeVersion` 默认 pin 一致。以下数字是后续条目的证据基础，动手前先复核；上游迭代很快，过期的基线会让整张表失效。
+上游 checkout 当时已更新至 `0.1.1-rc.2`，与当时的 `dsh.runtimeVersion` 默认 pin 一致。以下数字保留为历史证据；当前默认 pin 是 `0.1.2-rc.1`，以本文件上方的 RC Remote 审计为准。
 
 - **Unary RPC**（`POST /api/<method>`，点号形式）：上游 52 条（`deepseek-harness/packages/host/apiproxy/src/fetch/handler.ts:90-143`），扩展消费 45 条（`src/harnessProtocol.ts:36-179`），无悬空引用。
 - **Session projection**：上游注册 13 个，注册插件在 `bundle/base` 与 `bundle/web-app` 均已挂载，默认安装下都是活的；扩展消费 8 个（`goal`、`todos`、`tokenUsage`、`contextPressure`、`title`、`sessionStats`、`permissions`、`imageLimits`）。
   `GenericProjectionStore`（`src/sessionStore.ts:234-265`）按任意字符串 key 存储，**未消费的 projection 其实已经到达并缓存**，`src/tracePanel.ts:854` 已泛化渲染其原始值。因此接入新 projection 是纯呈现层工作，不动传输、不改运行时组合。
-- **Typert Gateway**（`POST /api/<namespace>/<method>`，斜杠形式，与 unary 共用 `/api` 基址，见 `deepseek-harness/packages/api/gateway/src/index.ts:106-116`）：`goal.*` 与 `skill.*` 已有 unary 镜像并被消费；`commands`、`fileReference`、`sessionReference`、`pluginInventory`、`messageFeedback` 五个 namespace **无 unary 镜像，尚未接入**。同基址同动词，接入成本是 `src/harnessClient.ts` 的中等增量。
+- **Typert Gateway / RC Remote**（斜杠形式，与 unary 共用 `/api` 基址）：`commands/list` 与 `commands/execute` 已由 `src/dshRuntime.ts` 消费；`messageFeedback/list|put|delete` 已有 RPC、响应校验与 CAS 状态操作，但前端入口仍隐藏。当前扩展仍未消费 `fileReferences/list`、`sessionReferenceResolver/candidates`、`pluginInventory/list`。RC1 的调用封装已集中在 `src/remote/unaryClient.ts`，不要再按已删除的 `src/harnessClient.ts` 估算接入成本。
 
 ## P0：先行安全网
 
@@ -72,10 +72,10 @@ i18n 重复 key），否则都会作为运行时坏包发出——这是它最�
 
 - [x] **Subagent 运行时长**。`subagentTiming`（上游 `deepseek-harness/packages/subagent/subagent/src/projection.ts:62`），wire 形状 `{settledMs, active?: {since, through}}`。`SubagentTreeNodeView` 目前只有二值 `activity: "running" | "inactive"`，没有任何时长，这是真正的新信息。
       **身份部分不做**：另一个单元注册的 key 是 `subagent`（不是 `subagentIdentity`，`projection.ts:169`），其 `label` / `mode` 已由 `subagent.list` 放在树节点上，重复。
-- [ ] **消息反馈**。上游 `messageFeedback.list/put/delete` 已有公开 `@Remote`（`deepseek-harness/packages/feedback/message-feedback/src/index.ts:189,205,271`），协议与 Host sidecar 已保留；前端入口暂隐藏，待评测、统计或导出闭环明确后再开放。反馈不写入 Session 日志、模型上下文或 telemetry。
+- [ ] **消息反馈 UI/评测闭环**。上游 `messageFeedback.list/put/delete` 已有公开 `@Remote`（`deepseek-harness/packages/feedback/message-feedback/src/index.ts:189,205,271`）；`src/dshRuntime.ts`、`src/messageFeedback.ts` 与 `ChatViewProvider` 已保留 RPC、响应校验及 CAS 操作骨架，但消息入口和反馈状态呈现暂未接回 Webview。待评测、统计或导出闭环明确后再开放；反馈不写入 Session 日志、模型上下文或 telemetry。
 - [x] **`plan` 投影**。严格校验上游 `{active, pending}` wire 值并透传到 ChatView；Composer 按 `pending ? !active : active` 展示 `Plan ×` 状态，支持点击、`Shift+Tab` 或 `/plan off` 切换，并切换生成计划的输入提示。计划评审仍走 interaction 卡片。
-- [ ] **上下文用量与超限反馈补全**：发送前展示附件大小、截断与敏感文件风险，支持移除大项并说明最终进入 prompt 的内容。（基础部分已完成，缺 `contextBreakdown` 支撑的占用归因。）
-- [ ] **扩展 `@` 引用类型**：在文件与 `@selection` 之外增加目录、diagnostics，并显示实际捕获范围
+- [ ] **上下文用量与超限反馈补全**：发送前展示附件大小、截断与敏感文件风险，支持移除大项并说明最终进入 prompt 的内容。（基础用量与 `contextBreakdown` 占用归因已完成，仍缺发送前风险/移除大项/最终 prompt 说明。）
+- [ ] **扩展 `@` 引用类型**：当前已有文件、`@selection`、`@terminal` 以及基于本地 catalog/`session/search` 的 session 候选；仍需目录、diagnostics、实际捕获范围展示，并切换到 Host 侧候选以覆盖远程 cwd。
 - [ ] **项目记忆入口**：优先复用 Harness 公开 Memory/Skill 能力；无公开协议时只提供打开明确文件的 IDE 操作，不自动把自建记忆拼入所有 prompt。
 - [x] S：Debug Context——让 DSH 真正“看见断点现场”。 现在你已经能附加 Diagnostics，但 Debugger 是明显的下一步。`vscode.debug.activeStackItem` 可以直接拿当前 thread/frame，当前 frame 有 `frameId`/`threadId`/`session`，再通过标准 DAP `stackTrace` → `scopes` → `variables` 就能拿调用栈和局部变量。已实现单向快照：`DSH: Explain Current Debug State` 从当前聚焦的调试线程/帧采集停止原因、前 10 层 stack、局部变量、当前源码附近 24 行和 workspace diagnostics，敏感变量名脱敏并限制总大小；快照作为一次性 IDE context 注入下一条 prompt。Debug Toolbar 在暂停时提供入口，`/ide` 选择器也可手动触发。暂不引入 DSH 插件、双向 RPC 或 evaluate/step 控制。
 
@@ -84,34 +84,41 @@ i18n 重复 key），否则都会作为运行时坏包发出——这是它最�
 适配完成后（上一节），RC Remote 的消费面盘点：18 个下行事件已消费 12 个
 （catalog 6 个 + approval/question waterfall 2 个 + chatView 失效刷新 4 个，
 未消费的 6 个 `cordis/*` 见下）；已注册 session
-projection 已消费 10 个（goal、todos、tokenUsage、contextPressure、title、
-sessionStats、permissions、imageLimits、plan、subagentTiming），且
+projection 已消费 10 个业务面（goal、todos、tokenUsage、contextPressure、title、
+sessionStats、permissions、imageLimits、plan、subagentTiming），其中 `tokenUsage`
+已额外读取 `contextBreakdown`；且
 `GenericProjectionStore` 本就缓存全部 projection —— 以下多数条目是**纯呈现层
 工作**，不动传输。按性价比排序：
 
-- [ ] **占用归因（`contextBreakdown`）**：`{systemTokens, toolsTokens, messageTokens, claim?}`
+- [x] **占用归因（`contextBreakdown`）**：`{systemTokens, toolsTokens, messageTokens, claim?}`
       （`dsh-v0.1.2-rc.1:packages/llm/token-meter/src/breakdown-projection.ts:59`）。
-      正好补全上方「上下文用量与超限反馈补全」缺的一半：在统计面板里把
-      上下文占用拆成 system / tools / messages 三段。零新请求。
+      `src/tokenUsage.ts` 已严格校验并接入 `TokenUsageBar`，统计面板现在把
+      上下文占用拆成 system / tools / messages 三段；`claim` 仍按上游 wire 约定不透传。
+      这是 projection 消费，不新增请求。
 - [ ] **跨会话引用 `@session`**：`sessionReferenceResolver/candidates`（`{agentId, query}`）返回
       `{sessionId, label, cwd, sameWorkspace, createdAt, mention}`，`mention` 是规范
       `@[label](dsh-session:…)` 串（`dsh-v0.1.2-rc.1:packages/context/session-reference/src/index.ts:250`）。
       宿主在 agent pre-step 自动把引用会话做成有预算、有 provenance（capturedThroughSeq /
       compacted / omitted 计数）、声明 untrusted 的只读快照（:130-160）。IDE 侧只做三件事：
       Composer `@` 候选拉取、mention 插入草稿、消息流展示引用来源徽标。这是新 RPC 里感知价值最高的一项。
+      当前 IDE 仅用本地 catalog + `session/search` 生成候选，尚未调用该 resolver，因此远程
+      cwd、provenance 快照与来源徽标仍未闭环。
 - [ ] **服务端文件/目录 `@` 候选**：`fileReferences/list`（`{agentId, query}`，`dsh-v0.1.2-rc.1:packages/api/session-controller/src/file-references.ts:32`）
       返回 Agent 工作目录下确定性的路径候选（含目录）。与现有本地 VS Code 候选互补：
       服务端候选与 Agent 实际 cwd 对齐（远程工作区/容器场景下本地路径根本不对），
-      也部分解锁上方「扩展 @ 引用类型」的目录项。
+      也部分解锁上方「扩展 @ 引用类型」的目录项。当前仍由 `vscode.workspace.findFiles`
+      生成本地文件候选，尚无该 RPC 的 Runtime wrapper 或合并策略。
 - [ ] **对话大纲投影（`turnOutline`）**：`{turns: [{turn, seq, prompt, response}], draft}`
       （`dsh-v0.1.2-rc.1:packages/session/session-turn-outline/src/projection.ts:86`）。
       上游特意为「翻页窗口之外的 turn」提供宿主权威大纲——现有 conversationNavigation
-      TreeView 只能看本地已加载范围，对齐后大纲在长会话翻页时不缺行。
+      TreeView 已有基于本地已加载 surface 的导航，但尚未消费该 projection；对齐后大纲在
+      长会话翻页时才不会缺行。
 - [ ] **定时提醒只读面板（`schedule`）**：active reminders `{prompt, afterSeconds|everySeconds, scheduledAt}`
       （`dsh-v0.1.2-rc.1:packages/schedule/schedule/src/projection.ts:70`）。创建只在
       agent 侧 tools（`schedule/src/tools.ts`），IDE 只读展示 + 失效重拉，不做伪造创建入口。
 - [ ] **会话模型选择实时投影（`modelSelection`）**（`dsh-v0.1.2-rc.1:packages/api/session-controller/src/model-selection-projection.ts:59`）：
-      模型被别处（Web UI、agent）切换时状态条即时跟上，代替现在只在发送前拉 catalog。
+      `DshRuntime.models()` 已在拉取 catalog 时读取该 projection；但 ChatView 尚未在 projection
+      变化时主动刷新 `selectedModels`，所以模型被别处（Web UI、agent）切换时状态条还不能保证即时跟上。
 - [ ] **插件库存只读视图（`pluginInventory`）**：`pluginInventory/list` → `{entries: [{entryId, moduleName, enabled, fiberPhase}], agentPresets: [{id, trust, name, isDefault, rows: [{moduleName, enabled, fiberPhase, condition}]}]}`
       （`dsh-v0.1.2-rc.1:packages/host/plugin-inventory/src/index.ts:65`、`types.ts`）。
       Loader 条目与每个 preset 的插件组合 + Fiber 生命周期相位（`failed` 可见）。
@@ -121,10 +128,11 @@ sessionStats、permissions、imageLimits、plan、subagentTiming），且
       `runHostHalf`、`getClientCode`、`resolveRequestRun`（`dsh-v0.1.2-rc.1:packages/extensions/cordis-host-runner/src/index.ts:226,248,324,383,412`），
       配套 6 个未消费的 `cordis/*` 下行事件。最小可行：只读状态 + 移除 + `cordis/request-run`
       审批联动；`getClientCode` 渲染动态插件 client half 属独立大项，暂不做。
-- [ ] **远程工作区支持评估**（激活上方 P1「Runtime 可靠性」的搁置项）：`directoryPicker/*`、
-      `fileReferences/list`、`session/canOpenWorkspacePath|openWorkspacePath` 本轮已全部迁移，
-      Runtime 侧文件浏览/打开的 RPC 解法就位，剩验证 Remote SSH/WSL/Dev Container 下
-      Extension Host 与 Runtime 同侧性的实机评估。
+- [ ] **远程工作区支持评估**（激活上方 P1「Runtime 可靠性」的搁置项）：`dshRuntime` 已有
+      `directoryPicker/*`、`session/canOpenWorkspacePath|openWorkspacePath` wrapper，
+      `fileReferences/list` 仍未消费。Runtime 侧文件浏览/打开的协议解法基本就位，剩验证
+      Remote SSH/WSL/Dev Container 下 Extension Host 与 Runtime 同侧性的实机评估，以及把
+      picker/file candidates 接入实际 UI。
 
 附注（证据与边界）：
 
