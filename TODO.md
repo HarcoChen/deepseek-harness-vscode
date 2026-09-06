@@ -150,7 +150,7 @@ subagentTiming、modelSelection、turnOutline、schedule）；且
       `directoryPicker/pick` / `directoryPicker/list` / `directoryPicker/createDirectory` 三条目录选择 RPC
       尚未接入专用 picker。需在 Remote SSH/WSL/Dev Container 实机确认 Extension Host、
       Runtime 与文件系统同侧性后，再决定是否增加远程目录浏览 UI（本地场景与 VS Code 原生 API 重复）。
-- [ ] **异常退出恢复**：检测扩展启动的 Runtime 意外退出，提供有限次数的退避重启，并避免接管或终止用户自行启动的实例。
+- [x] **异常退出恢复**：已检测扩展启动的 Runtime 意外退出，并按 1s/5s/15s 提供最多三次退避重启；手动生命周期操作会取消恢复，外部 Runtime 只复用、不接管。跨平台/真实进程树仍归入下方验收项。
 - [ ] **rc2 兼容性回归**：验证 V4 Vision、Files API 图片复用、Windows PTY 与沙箱修复；不新增单元测试，使用现有检查与手动 smoke 流程。
 
 ## P1：重构
