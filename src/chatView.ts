@@ -40,6 +40,7 @@ import { MarkdownRenderCache } from "./markdownRenderCache";
 import { samePath } from "./paths";
 import { presentSessionRows } from "./sessionCatalog";
 import { SessionCatalogCache } from "./sessionCatalogCache";
+import { SubagentController } from "./subagentController";
 import { projectionCell, projectionValue, type SessionStateSnapshot } from "./sessionStore";
 import { isRemoteError } from "./remote/errors";
 import { presentHostBaseline } from "./hostState";
@@ -65,15 +66,11 @@ import {
     GoalMutationGate,
     type GoalMutationOperation,
     normalizeGoalRef,
-    normalizeSubagentCatalog,
-    normalizeSubagentTiming,
     parseGoalProjection,
     presentGoalHud,
     presentJobCenter,
     presentApprovalCall,
     presentPlanReview,
-    projectSubagentHistory,
-    SubagentTreeStore,
 } from "./sessionFeatures";
 import {
     ChatViewState,
@@ -81,7 +78,6 @@ import {
     ChatMessage,
     DshAgentPresetEntry,
     DshDynamicPluginPanelView,
-    DshHistoryEntry,
     DshImageLimitsView,
     DshImageUpload,
     DshMessageFeedbackDeleteRequest,
@@ -102,15 +98,10 @@ import {
     DshSettingsNamespaceView,
     DshCommandDescriptor,
     DshSkillEntry,
-    DshSubagentAddress,
-    DshSubagentCatalog,
     DshTodoItemView,
     DshWorkspaceView,
     PermissionProjectionView,
     SessionStatsView,
-    SubagentHistoryPreview,
-    SubagentTimingView,
-    SubagentTreeNodeView,
 } from "./types";
 import { projectTokenUsage, SelectedModelSnapshot } from "./tokenUsage";
 import { openWorkspaceFileLocation } from "./workspaceNavigation";
@@ -223,17 +214,6 @@ function referencesSelection(text: string): boolean {
     return /(^|\s)@selection(?=$|\s|[,.;:!?])/u.test(text);
 }
 
-function lowestEventSeq(entries: readonly DshHistoryEntry[]): number | undefined {
-    let lowest: number | undefined;
-    for (const entry of entries) {
-        const seq = entry.event.seq;
-        if (typeof seq === "number" && Number.isSafeInteger(seq) && seq >= 0) {
-            lowest = lowest === undefined ? seq : Math.min(lowest, seq);
-        }
-    }
-    return lowest;
-}
-
 function isCredentialIssue(error: unknown): boolean {
     const message = errorMessage(error).toLowerCase();
     return /missing[_ -]?credential|api[ _-]?key|\bauth\b|authentication|unauthori[sz]ed|\b401\b|credential.*(unset|missing|not configured)/u.test(
@@ -329,11 +309,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private readonly optimisticPrompts: OptimisticPrompt[] = [];
     private readonly markdownRenders = new MarkdownRenderCache();
     private readonly goalMutations = new GoalMutationGate();
-    private readonly subagentTrees = new SubagentTreeStore();
-    private readonly subagentTreeAborts = new Map<string, AbortController>();
-    private subagentPreview: SubagentHistoryPreview | undefined;
-    private subagentPreviewAbort: AbortController | undefined;
-    private subagentPreviewGeneration = 0;
+    private readonly subagents: SubagentController;
     private sessionId: string | undefined;
     private sessionCwd: string | undefined;
     private newSessionDraft = false;
@@ -355,7 +331,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private webviewReady = false;
     private restoringPersistedSession: Promise<void> | undefined;
     private stateUpdateTimer: ReturnType<typeof setTimeout> | undefined;
-    private subagentRefreshTimer: ReturnType<typeof setTimeout> | undefined;
     private readonly observedRunning = new Map<string, boolean>();
     private readonly completedWhileHidden = new Set<string>();
     private readonly selectedModels = new Map<string, SelectedModelSnapshot>();
@@ -402,6 +377,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     ) {
         this.changeReviews = new ChangeReviewStore(output);
         this.toolDiffs = new ToolDiffStore(output);
+        this.subagents = new SubagentController({
+            runtime,
+            currentRootSession: () => this.sessionId,
+            onChange: () => this.postState(),
+        });
         const unsubscribeSession = runtime.getSessionStore().onDidChange((sessionId, snapshot) => {
             const catalogSession = runtime.getSessionCatalog().snapshot().sessions.find(
                 (item) => item.sessionId === sessionId,
@@ -413,7 +393,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     snapshot,
                 );
             }
-            const subagentTimingChanged = this.observeSubagentTiming(sessionId, snapshot);
+            const subagentTimingChanged = this.subagents.observeSubagentTiming(sessionId, snapshot);
             if (sessionId === this.sessionId) {
                 this.observeModelSelection(sessionId, snapshot);
                 this.goalMutations.observe(
@@ -428,7 +408,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         const unsubscribeCatalog = runtime.getSessionCatalog().onDidChange(() => {
             this.observeSessionTransitions();
             this.schedulePostState();
-            this.scheduleSubagentRefresh();
+            this.subagents.scheduleSubagentRefresh();
         });
         this.disposables.push(
             vscode.workspace.registerTextDocumentContentProvider(
@@ -494,7 +474,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                         this.refreshModelCatalog(this.sessionId);
                         this.refreshSkillCatalog(this.sessionId);
                         this.refreshCommandCatalog(this.sessionId);
-                        void this.refreshSubagentTree(this.sessionId);
+                        void this.subagents.refreshSubagentTree(this.sessionId);
                     }
                 });
             }),
@@ -1117,9 +1097,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     public dispose(): void {
         this.viewMessageDisposable?.dispose();
         if (this.stateUpdateTimer) clearTimeout(this.stateUpdateTimer);
-        if (this.subagentRefreshTimer) clearTimeout(this.subagentRefreshTimer);
-        for (const controller of this.subagentTreeAborts.values()) controller.abort();
-        this.subagentPreviewAbort?.abort();
+        this.subagents.dispose();
         this.fileReferenceQueryAbort?.abort();
         this.changeReviews.dispose();
         this.toolDiffs.dispose();
@@ -1141,7 +1119,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     this.postState();
                     this.flushPendingComposerUpdate();
                     this.flushPendingComposerImages();
-                    if (this.sessionId) void this.refreshSubagentTree(this.sessionId);
+                    if (this.sessionId) void this.subagents.refreshSubagentTree(this.sessionId);
                     break;
                 case "sendPrompt":
                     await this.sendPrompt(message.text ?? "", message.mode, message.images ?? []);
@@ -1345,19 +1323,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     await this.mutateGoal(message);
                     break;
                 case "refreshSubagents":
-                    if (this.sessionId) await this.refreshSubagentTree(this.sessionId);
+                    if (this.sessionId) await this.subagents.refreshSubagentTree(this.sessionId);
                     break;
                 case "openSubagent":
-                    await this.openSubagentHistory(message.childSessionId);
+                    await this.subagents.openSubagentHistory(message.childSessionId);
                     break;
                 case "closeSubagent":
-                    this.closeSubagentHistory();
+                    this.subagents.closeSubagentHistory();
                     break;
                 case "followUpSubagent":
-                    await this.followUpSubagent(message.childSessionId, message.text);
+                    await this.subagents.followUpSubagent(message.childSessionId, message.text);
                     break;
                 case "interruptSubagent":
-                    await this.interruptSubagent(message.childSessionId);
+                    await this.subagents.interruptSubagent(message.childSessionId);
                     break;
                 case "answerApproval":
                     await this.answerApproval(message);
@@ -1746,7 +1724,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                 this.pendingNewSessionPreset,
                 workspace.workspace.workspaceId,
             );
-            if (this.sessionId !== created.sessionId) this.discardSubagentPreview();
+            if (this.sessionId !== created.sessionId) this.subagents.discardSubagentPreview();
             this.sessionId = created.sessionId;
             this.sessionCwd = this.pendingNewSessionWorkspacePath ?? workspaceRoot;
             if (persist) {
@@ -1755,7 +1733,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     cwd: workspaceRoot,
                 } satisfies PersistedSession);
             }
-            void this.refreshSubagentTree(created.sessionId);
+            void this.subagents.refreshSubagentTree(created.sessionId);
             this.newSessionDraft = false;
             this.clearNewSessionDraft();
         }
@@ -1852,7 +1830,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.pendingNewSessionWorkspaceTitle = selectedWorkspace?.title;
         this.optimisticPrompts.length = 0;
         this.cancelRequested = false;
-        this.discardSubagentPreview();
+        this.subagents.discardSubagentPreview();
         await this.extensionContext.workspaceState.update("session", undefined);
         this.postState();
         this.reveal();
@@ -2229,7 +2207,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             );
         this.sessionId = undefined;
         this.sessionCwd = undefined;
-        this.discardSubagentPreview();
+        this.subagents.discardSubagentPreview();
         await this.extensionContext.workspaceState.update("session", undefined);
         if (next) await this.switchSession(next.sessionId);
         this.postState();
@@ -2238,7 +2216,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private async switchSession(sessionId: string): Promise<void> {
         const catalog = this.runtime.getSessionCatalog().snapshot();
         const session = catalog.sessions.find((item) => item.sessionId === sessionId);
-        if (this.sessionId !== sessionId) this.discardSubagentPreview();
+        if (this.sessionId !== sessionId) this.subagents.discardSubagentPreview();
         this.sessionId = sessionId;
         this.sessionCwd = session?.cwd ?? this.workspaceRoot();
         this.newSessionDraft = false;
@@ -2253,7 +2231,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.refreshModelCatalog(sessionId);
         this.refreshSkillCatalog(sessionId);
         this.refreshCommandCatalog(sessionId);
-        void this.refreshSubagentTree(sessionId);
+        void this.subagents.refreshSubagentTree(sessionId);
         this.reveal();
     }
 
@@ -2677,350 +2655,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                 },
             };
         });
-    }
-
-    private subagentTimingMap(
-        catalogs: ReadonlyMap<string, DshSubagentCatalog>,
-    ): Map<string, SubagentTimingView> {
-        const catalog = this.runtime.getSessionCatalog().snapshot();
-        const summaries = new Map(catalog.sessions.map((item) => [item.sessionId, item] as const));
-        const timings = new Map<string, SubagentTimingView>();
-        for (const childCatalog of catalogs.values()) {
-            for (const entry of childCatalog.entries) {
-                if (entry.kind !== "child") continue;
-                const snapshot = this.runtime.getSessionStore().get(entry.id);
-                const local = normalizeSubagentTiming(
-                    projectionValue(snapshot, "subagentTiming"),
-                );
-                const summary = summaries.get(entry.id);
-                const listed = normalizeSubagentTiming(
-                    summary?.projections?.values.subagentTiming,
-                );
-                // Attached sessions receive live projection frames through the mux; a cold
-                // child has no SessionStore row, so its session.list projection is the
-                // available baseline. During an initial history repair, retain that baseline
-                // until the store has a complete cut.
-                const timing = local ?? (!snapshot || snapshot.needsHistoryBaseline ? listed : undefined);
-                if (timing !== undefined) timings.set(entry.id, timing);
-            }
-        }
-        return timings;
-    }
-
-    private observeSubagentTiming(
-        sessionId: string,
-        snapshot: SessionStateSnapshot,
-    ): boolean {
-        const rootSessionId = this.sessionId;
-        if (!rootSessionId || sessionId === rootSessionId) return false;
-        const tree = this.subagentTrees.get(rootSessionId);
-        if (!tree?.nodes.some((node) => node.kind === "child" && node.id === sessionId)) {
-            return false;
-        }
-        const timing = normalizeSubagentTiming(projectionValue(snapshot, "subagentTiming"));
-        const changed = this.subagentTrees.updateTiming(rootSessionId, sessionId, timing);
-        if (
-            changed &&
-            this.subagentPreview?.rootSessionId === rootSessionId &&
-            this.subagentPreview.childSessionId === sessionId
-        ) {
-            this.subagentPreview = { ...this.subagentPreview, timing };
-        }
-        return changed;
-    }
-
-    private async refreshSubagentTree(rootSessionId: string): Promise<void> {
-        this.subagentTreeAborts.get(rootSessionId)?.abort();
-        const controller = new AbortController();
-        this.subagentTreeAborts.set(rootSessionId, controller);
-        const generation = this.subagentTrees.begin(rootSessionId);
-        if (rootSessionId === this.sessionId) this.postState();
-
-        try {
-            const catalogs = new Map<string, DshSubagentCatalog>();
-            const pending = [rootSessionId];
-            const visited = new Set<string>();
-            while (pending.length > 0) {
-                const parentSessionId = pending.shift();
-                if (!parentSessionId || visited.has(parentSessionId)) continue;
-                visited.add(parentSessionId);
-                const raw = await this.runtime.listSubagents(parentSessionId, controller.signal);
-                const catalog = normalizeSubagentCatalog(raw);
-                if (!catalog) {
-                    throw new Error(t("Harness returned an invalid subagent.list for {sessionId}.", { sessionId: parentSessionId }));
-                }
-                catalogs.set(parentSessionId, catalog);
-                for (const entry of catalog.entries) {
-                    if (entry.kind === "child" && entry.hasChildren && !visited.has(entry.id)) {
-                        pending.push(entry.id);
-                    }
-                }
-            }
-            const applied = this.subagentTrees.resolve(
-                rootSessionId,
-                generation,
-                catalogs,
-                this.subagentTimingMap(catalogs),
-            );
-            if (applied && this.subagentPreview?.rootSessionId === rootSessionId) {
-                const refreshed = this.subagentTrees
-                    .get(rootSessionId)
-                    ?.nodes.find(
-                        (node) =>
-                            node.kind === "child" &&
-                            node.id === this.subagentPreview?.childSessionId,
-                    );
-                if (
-                    refreshed &&
-                    (refreshed.mode === "one-shot" || refreshed.mode === "continuable") &&
-                    (refreshed.activity === "running" || refreshed.activity === "inactive")
-                ) {
-                    this.subagentPreview = {
-                        ...this.subagentPreview,
-                        label: refreshed.label ?? refreshed.id,
-                        mode: refreshed.mode,
-                        activity: refreshed.activity,
-                        parentAvailable: refreshed.parentAvailable,
-                        timing: refreshed.timing,
-                    };
-                } else {
-                    this.subagentPreview = {
-                        ...this.subagentPreview,
-                        state: "error",
-                        error: t("This subagent is no longer in the current official catalog."),
-                    };
-                }
-            }
-        } catch (error) {
-            if (!controller.signal.aborted) {
-                this.subagentTrees.fail(rootSessionId, generation, errorMessage(error));
-            }
-        } finally {
-            if (this.subagentTreeAborts.get(rootSessionId) === controller) {
-                this.subagentTreeAborts.delete(rootSessionId);
-            }
-            if (rootSessionId === this.sessionId) this.postState();
-        }
-    }
-
-    private selectedSubagent(childSessionId: string): SubagentTreeNodeView | undefined {
-        const rootSessionId = this.sessionId;
-        if (!rootSessionId) return undefined;
-        const matches = this.subagentTrees
-            .get(rootSessionId)
-            ?.nodes.filter((node) => node.kind === "child" && node.id === childSessionId) ?? [];
-        return matches.length === 1 ? matches[0] : undefined;
-    }
-
-    private subagentAddress(node: SubagentTreeNodeView): DshSubagentAddress | undefined {
-        if (node.kind !== "child" || (node.mode !== "one-shot" && node.mode !== "continuable")) {
-            return undefined;
-        }
-        return {
-            parentSessionId: node.parentSessionId,
-            childSessionId: node.id,
-            mode: node.mode,
-        };
-    }
-
-    private async readCompleteSubagentHistory(
-        address: DshSubagentAddress,
-        signal: AbortSignal,
-    ) {
-        const tail = await this.runtime.subagentHistory(address, undefined, 100, signal);
-        const pages = [tail.events];
-        let hasMore = tail.hasMore;
-        let beforeSeq = lowestEventSeq(tail.events);
-        while (hasMore) {
-            if (beforeSeq === undefined || beforeSeq <= 0) {
-                throw new Error(t("Subagent {sessionId} history pagination did not provide an earlier seq.", { sessionId: address.childSessionId }));
-            }
-            const page = await this.runtime.subagentHistory(address, beforeSeq, 100, signal);
-            pages.push(page.events);
-            const nextBeforeSeq = lowestEventSeq(page.events);
-            if (page.hasMore && (nextBeforeSeq === undefined || nextBeforeSeq >= beforeSeq)) {
-                throw new Error(t("Subagent {sessionId} history pagination did not advance.", { sessionId: address.childSessionId }));
-            }
-            beforeSeq = nextBeforeSeq;
-            hasMore = page.hasMore;
-        }
-        return {
-            events: pages.flat(),
-            hasMore: false,
-            ...(tail.projections === undefined ? {} : { projections: tail.projections }),
-        };
-    }
-
-    private async openSubagentHistory(childSessionId: string): Promise<void> {
-        const rootSessionId = this.sessionId;
-        const node = this.selectedSubagent(childSessionId);
-        const address = node && this.subagentAddress(node);
-        if (
-            !rootSessionId ||
-            !node ||
-            !address ||
-            (node.activity !== "running" && node.activity !== "inactive")
-        ) return;
-
-        this.subagentPreviewAbort?.abort();
-        const controller = new AbortController();
-        this.subagentPreviewAbort = controller;
-        const generation = ++this.subagentPreviewGeneration;
-        this.subagentPreview = {
-            rootSessionId,
-            childSessionId,
-            label: node.label ?? childSessionId,
-            mode: address.mode,
-            parentAvailable: node.parentAvailable,
-            activity: node.activity,
-            ...(node.timing === undefined ? {} : { timing: node.timing }),
-            state: "loading",
-            messages: [],
-        };
-        this.postState();
-
-        try {
-            const history = await this.readCompleteSubagentHistory(address, controller.signal);
-            if (
-                controller.signal.aborted ||
-                generation !== this.subagentPreviewGeneration ||
-                rootSessionId !== this.sessionId
-            ) return;
-            const timing = normalizeSubagentTiming(history.projections?.values.subagentTiming) ?? node.timing;
-            this.subagentPreview = {
-                ...this.subagentPreview,
-                rootSessionId,
-                childSessionId,
-                label: node.label ?? childSessionId,
-                mode: address.mode,
-                parentAvailable: node.parentAvailable,
-                activity: node.activity,
-                ...(timing === undefined ? {} : { timing }),
-                state: "ready",
-                messages: projectSubagentHistory(childSessionId, history),
-            };
-        } catch (error) {
-            if (
-                !controller.signal.aborted &&
-                generation === this.subagentPreviewGeneration &&
-                rootSessionId === this.sessionId
-            ) {
-                this.subagentPreview = {
-                    ...this.subagentPreview,
-                    rootSessionId,
-                    childSessionId,
-                    label: node.label ?? childSessionId,
-                    mode: address.mode,
-                    parentAvailable: node.parentAvailable,
-                    activity: node.activity,
-                    state: "error",
-                    messages: [],
-                    error: errorMessage(error),
-                };
-            }
-        } finally {
-            if (this.subagentPreviewAbort === controller) this.subagentPreviewAbort = undefined;
-            if (rootSessionId === this.sessionId) this.postState();
-        }
-    }
-
-    private closeSubagentHistory(): void {
-        this.discardSubagentPreview();
-        this.postState();
-    }
-
-    private discardSubagentPreview(): void {
-        this.subagentPreviewAbort?.abort();
-        this.subagentPreviewAbort = undefined;
-        this.subagentPreviewGeneration += 1;
-        this.subagentPreview = undefined;
-    }
-
-    private async followUpSubagent(childSessionId: string, text: string): Promise<void> {
-        const rootSessionId = this.sessionId;
-        const node = this.selectedSubagent(childSessionId);
-        const preview = this.subagentPreview;
-        if (
-            !rootSessionId ||
-            !node ||
-            node.mode !== "continuable" ||
-            !node.parentAvailable ||
-            !preview ||
-            preview.rootSessionId !== rootSessionId ||
-            preview.childSessionId !== childSessionId ||
-            preview.pendingAction
-        ) return;
-        const previewGeneration = this.subagentPreviewGeneration;
-        this.subagentPreview = { ...preview, pendingAction: "follow-up", error: undefined };
-        this.postState();
-        try {
-            const result = await this.runtime.promptSubagent({
-                parentSessionId: node.parentSessionId,
-                childSessionId,
-                mode: "continuable",
-            }, text);
-            if (typeof result.messageId !== "string") {
-                throw new Error(t("Harness returned an invalid subagent.prompt acknowledgement."));
-            }
-            await this.refreshSubagentTree(rootSessionId);
-            if (
-                this.sessionId === rootSessionId &&
-                this.subagentPreviewGeneration === previewGeneration &&
-                this.subagentPreview?.childSessionId === childSessionId
-            ) await this.openSubagentHistory(childSessionId);
-        } catch (error) {
-            if (this.sessionId === rootSessionId && this.subagentPreview?.childSessionId === childSessionId) {
-                this.subagentPreview = {
-                    ...this.subagentPreview,
-                    pendingAction: undefined,
-                    error: errorMessage(error),
-                };
-                this.postState();
-            }
-        }
-    }
-
-    private async interruptSubagent(childSessionId: string): Promise<void> {
-        const rootSessionId = this.sessionId;
-        const node = this.selectedSubagent(childSessionId);
-        const preview = this.subagentPreview;
-        if (
-            !rootSessionId ||
-            !node ||
-            node.mode !== "continuable" ||
-            !preview ||
-            preview.rootSessionId !== rootSessionId ||
-            preview.childSessionId !== childSessionId ||
-            preview.pendingAction
-        ) return;
-        const previewGeneration = this.subagentPreviewGeneration;
-        this.subagentPreview = { ...preview, pendingAction: "interrupt", error: undefined };
-        this.postState();
-        try {
-            const result = await this.runtime.interruptSubagent({
-                parentSessionId: node.parentSessionId,
-                childSessionId,
-                mode: "continuable",
-            });
-            if (result.accepted !== true) {
-                throw new Error(t("Harness returned an invalid subagent.interrupt acknowledgement."));
-            }
-            await this.refreshSubagentTree(rootSessionId);
-            if (
-                this.sessionId === rootSessionId &&
-                this.subagentPreviewGeneration === previewGeneration &&
-                this.subagentPreview?.childSessionId === childSessionId
-            ) await this.openSubagentHistory(childSessionId);
-        } catch (error) {
-            if (this.sessionId === rootSessionId && this.subagentPreview?.childSessionId === childSessionId) {
-                this.subagentPreview = {
-                    ...this.subagentPreview,
-                    pendingAction: undefined,
-                    error: errorMessage(error),
-                };
-                this.postState();
-            }
-        }
     }
 
     private async answerApproval(
@@ -3561,6 +3195,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                 interaction.status === "unavailable" ||
                 interaction.status === "resolved",
         ) ?? [];
+        const subagentPreview = this.subagents.previewFor(this.sessionId);
         const state: ChatViewState = {
             messages: this.renderMessages(
                 projectedMessages,
@@ -3694,18 +3329,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             goal: this.sessionId
                 ? presentGoalHud(goalCell, this.goalMutations.snapshot(this.sessionId))
                 : undefined,
-            subagents: this.sessionId ? this.subagentTrees.get(this.sessionId) : undefined,
-            subagentPreview:
-                this.sessionId && this.subagentPreview?.rootSessionId === this.sessionId
-                    ? {
-                          ...this.subagentPreview,
-                          messages: this.renderMessages(
-                              this.subagentPreview.messages,
-                              `subagent:${this.subagentPreview.childSessionId}`,
-                              this.subagentPreview.childSessionId,
-                          ),
-                      }
-                    : undefined,
+            subagents: this.sessionId ? this.subagents.tree(this.sessionId) : undefined,
+            subagentPreview: subagentPreview
+                ? {
+                      ...subagentPreview,
+                      messages: this.renderMessages(
+                          subagentPreview.messages,
+                          `subagent:${subagentPreview.childSessionId}`,
+                          subagentPreview.childSessionId,
+                      ),
+                  }
+                : undefined,
             jobs: this.sessionId
                 ? presentJobCenter(this.sessionId, session?.jobs.items ?? [])
                 : [],
@@ -3795,8 +3429,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             message.images?.some((image) => image.attachmentId === attachmentId) === true ||
             message.tool?.images?.some((image) => image.attachmentId === attachmentId) === true,
         );
-        const preview = this.subagentPreview;
-        const referencedByPreview = preview?.rootSessionId === rootSessionId &&
+        const preview = this.subagents.previewFor(rootSessionId);
+        const referencedByPreview = preview !== undefined &&
             preview.messages.some((message) =>
                 message.images?.some((image) => image.attachmentId === attachmentId) === true ||
                 message.tool?.images?.some((image) => image.attachmentId === attachmentId) === true,
@@ -3804,7 +3438,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         const sessionId = referencedByRoot
             ? rootSessionId
             : referencedByPreview
-              ? preview.childSessionId
+              ? preview?.childSessionId
               : undefined;
         if (!sessionId) return;
 
@@ -3873,14 +3507,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             this.stateUpdateTimer = undefined;
             this.postState();
         }, 16);
-    }
-
-    private scheduleSubagentRefresh(): void {
-        if (this.subagentRefreshTimer || !this.sessionId || !this.runtime.getUrl()) return;
-        this.subagentRefreshTimer = setTimeout(() => {
-            this.subagentRefreshTimer = undefined;
-            if (this.sessionId) void this.refreshSubagentTree(this.sessionId);
-        }, 75);
     }
 
     private getHtml(webview: vscode.Webview): string {

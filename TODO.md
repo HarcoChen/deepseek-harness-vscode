@@ -35,6 +35,12 @@ inventory、停止、移除和拒绝待批准请求，Client half 继续交给 H
 收拢为 vscode-free 的 `src/sessionCatalogCache.ts`（value map、请求去重、失效代际、
 重拉排队各留一处实现），`npm run check` 与 `npm test`（50 项）验证通过；
 `handleMessage` 拆分与 Subagent 编排仍是重构余项。
+Subagent 编排随后也已迁出：树刷新/历史预览/跟进/中断与 6 个私有字段整体移入
+`src/subagentController.ts`（425 行），按 `ProviderManagementDeps` 先例注入
+`runtime` + `currentRootSession()` + `onChange()` 三个依赖，ChatViewProvider 仅在
+构造器订阅、handleMessage 五个 case、postState/loadImage 读取、dispose 处接线；
+迁出代码经机械替换归一后与原实现逐行等价（仅类内方法顺序不同）。重构余项
+只剩 `handleMessage` switch 拆分。
 
 ## 本轮进展（2026-08-26）
 
@@ -172,7 +178,7 @@ subagentTiming、modelSelection、turnOutline、schedule）；且
 
 ## P1：重构
 
-- [ ] **继续拆 `chatView.ts`**。已完成第一步：Workspace 与 Agent Preset 管理迁出（3169 → 2820 行）；目录缓存已收拢为 `sessionCatalogCache.ts`（见「结构」）。剩余按性价比：`handleMessage` 的 205 行 switch 拆成按域分组的处理器表；Subagent 编排（约 285 行，`SubagentTreeStore` 已存在，预览/跟进/中断仍在视图里）。`postState` 的 193 行不建议动——它本质是把二十多个来源汇成一个快照，拆开只会变成到处找字段。
+- [ ] **继续拆 `chatView.ts`**。已完成第一步：Workspace 与 Agent Preset 管理迁出（3169 → 2820 行）；目录缓存已收拢为 `sessionCatalogCache.ts`（见「结构」）；Subagent 编排已迁出为 `subagentController.ts`（见「结构」）。剩余按性价比：`handleMessage` 的 205 行 switch 拆成按域分组的处理器表。`postState` 的 193 行不建议动——它本质是把二十多个来源汇成一个快照，拆开只会变成到处找字段。
 动手前先读两条硬约束，它们决定了哪些改法可行：
 
 1. **`test/` 下 13 个 `node:test` 文件 `require("../dist/<module>.js")`**，钉住的是**编译产物的模块路径与具名导出**：`chatState`、`chatViewProtocol`、`deepseekBalance`、`harnessClient`、`harnessConnection`、`hostState`、`safeMarkdown`、`sessionCatalog`、`sessionFeatures`、`sessionStore`、`traceProjector`、`traceProtocol`。`npm test` 是发版门禁（`.github/workflows/release.yml`），移动或改名会在发版时才炸。且 `AGENTS.md` 禁止新增测试 —— 重构不能靠补测试买安全，必须构造上行为等价。
@@ -182,7 +188,7 @@ subagentTiming、modelSelection、turnOutline、schedule）；且
 
 ### 结构
 
-- [ ] **`src/chatView.ts` God Object 继续拆**（3582 → 3103 行，已抽出 6 块；本轮抽出第 7 块后 3909 行）。
+- [ ] **`src/chatView.ts` God Object 继续拆**（3582 → 3103 行，已抽出 6 块；目录缓存与 Subagent 迁出后 3535 行）。
       已完成：Provider 管理 → `providerManagement.ts`（224 行，以 `ProviderManagementDeps` 注入依赖而非反向依赖 ChatViewProvider）；代码块动作 → `codeBlockActions.ts`（111 行，接缝按 `text` 而非 `renderId` 划，因为可复制文本的缓存与 markdown 渲染共享）；markdown 渲染与代码 payload → `markdownRenderCache.ts`（类，按 `GoalMutationGate` 先例）；设置值转换 → `chatViewPresentation.settingsMutationOps`；会话切换器行组装 → `sessionCatalog.presentSessionRows`（接缝划在 `catalog` 上，两处派生一起搬）；`mutateGoal` 内重复五次的 ref 确认收成一处；三套目录缓存的并发骨架（value map + 请求去重 + 失效代际 + 重拉排队）→ `sessionCatalogCache.ts`（89 行，`pull` 承载 then/catch/finally 编排，apply/absent/fail 由调用方注入；skill 组原先缺 generations/refreshPending 字段，因无 invalidate 调用点，收拢后代际护栏零值恒真，行为不变）。
       **抽取标准（本轮验证有效，后续照用）**：候选必须不持有状态、不调 `postState`。按此标准复核的结果 —— Workspace 组的 `pendingNewSessionWorkspace*` 有 16 个读写点散在 `sendPrompt`/`postState`/`newSession`；Preset 组的 `agentPresetCatalog` 7 个点里只有 2 个在块内，`agentPresetDocuments` 更在构造函数里注册为 `TextDocumentContentProvider`；Subagent 组自己拥有 5 个字段，本质是 store+controller。这三组直接抽出只是把耦合从文件内搬到文件间，**须连状态一起搬**才有意义，属更大的设计改动。
       剩余易做项：`chooseWorkspaceAction`(42 行) 与 `chooseAgentPresetAction`(46 行) 完全不碰 `this`，但它们是上述两个域的「动作菜单」那一半，宜与各自域一同搬迁，不要先按机制凑进一个桶。
