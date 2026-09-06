@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import type { DshSettingFieldView, DshSettingsCardView, DshSettingsPanelView } from "../../../src/types";
 import { postAction } from "../bridge";
+import { PluginInventoryPanel } from "./PluginInventoryPanel";
 import { t } from "../i18n";
 
 function fieldKey(field: DshSettingFieldView): string {
@@ -142,6 +143,7 @@ export function SettingsPanel({ settings }: { settings: DshSettingsPanelView }):
             </div>
             {settings.loading ? <div className="dsh-settings-loading">{t("Loading...")}</div> : null}
             {settings.error ? <div className="dsh-settings-error">{settings.error}</div> : null}
+            {settings.pluginInventory ? <PluginInventoryPanel inventory={settings.pluginInventory} /> : null}
             {!settings.loading && !settings.error && settings.cards.length === 0 ? (
                 <div className="dsh-settings-empty">{t("No plugin settings exposed")}</div>
             ) : null}

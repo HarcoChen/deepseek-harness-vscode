@@ -22,6 +22,7 @@ export type ChatViewAction =
     | { type: "configureApiKey" }
     | { type: "manageProviders" }
     | { type: "manageSettings" }
+    | { type: "refreshPluginInventory" }
     | { type: "openSettingsDocument" }
     | {
           type: "mutateSettings";
@@ -218,6 +219,10 @@ export function parseChatViewAction(value: unknown): ChatViewAction | undefined 
         case "manageAgentPresets":
             return hasOnly(value, ["type", "protocol"])
                 ? { type: "manageAgentPresets" }
+                : undefined;
+        case "refreshPluginInventory":
+            return hasOnly(value, ["type", "protocol"])
+                ? { type: "refreshPluginInventory" }
                 : undefined;
         case "selectReasoningEffort":
             return hasOnly(value, ["type", "effort"]) &&

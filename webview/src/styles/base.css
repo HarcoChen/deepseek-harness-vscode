@@ -469,3 +469,216 @@ button {
 .dsh-settings-document {
     justify-self: start;
 }
+
+/* ---------- read-only plugin inventory ---------- */
+
+.dsh-plugin-inventory {
+    display: grid;
+    gap: var(--dsh-space-2);
+    padding: var(--dsh-space-3);
+    border: 1px solid var(--dsh-border);
+    border-radius: var(--dsh-radius-md);
+    background: var(--dsh-surface);
+}
+
+.dsh-plugin-inventory-head,
+.dsh-plugin-group-head,
+.dsh-plugin-card-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--dsh-space-2);
+}
+
+.dsh-plugin-inventory-head > div {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+.dsh-plugin-inventory-head small,
+.dsh-plugin-group > small,
+.dsh-plugin-group-head small {
+    color: var(--vscode-descriptionForeground);
+    font-size: var(--dsh-font-xs);
+}
+
+.dsh-plugin-inventory-head button,
+.dsh-plugin-hint button {
+    border: 1px solid var(--dsh-border);
+    border-radius: var(--dsh-radius-sm);
+    padding: var(--dsh-space-1) var(--dsh-space-2);
+    color: inherit;
+    background: var(--vscode-button-secondaryBackground);
+    cursor: pointer;
+    font-size: var(--dsh-font-xs);
+}
+
+.dsh-plugin-inventory-head button:disabled {
+    cursor: default;
+    opacity: 0.6;
+}
+
+.dsh-plugin-inventory-search {
+    display: grid;
+    gap: var(--dsh-space-1);
+    color: var(--vscode-descriptionForeground);
+    font-size: var(--dsh-font-xs);
+}
+
+.dsh-plugin-inventory-search input,
+.dsh-plugin-group-head select {
+    min-width: 0;
+    box-sizing: border-box;
+    border: 1px solid var(--vscode-input-border);
+    border-radius: var(--dsh-radius-sm);
+    padding: var(--dsh-space-2);
+    color: var(--vscode-input-foreground);
+    background: var(--vscode-input-background);
+}
+
+.dsh-plugin-group {
+    display: grid;
+    gap: var(--dsh-space-2);
+    border-top: 1px solid var(--dsh-border);
+    padding-top: var(--dsh-space-2);
+}
+
+.dsh-plugin-group > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--dsh-space-2);
+    cursor: pointer;
+    list-style: none;
+}
+
+.dsh-plugin-group > summary span {
+    color: var(--vscode-descriptionForeground);
+    font-size: var(--dsh-font-xs);
+}
+
+.dsh-plugin-group-head {
+    align-items: start;
+}
+
+.dsh-plugin-group-head select {
+    max-width: 55%;
+    padding: var(--dsh-space-1) var(--dsh-space-2);
+    font-size: var(--dsh-font-xs);
+}
+
+.dsh-plugin-cards {
+    display: grid;
+    gap: var(--dsh-space-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.dsh-plugin-card {
+    border: 1px solid var(--dsh-border);
+    border-radius: var(--dsh-radius-sm);
+    background: var(--vscode-editor-background);
+}
+
+.dsh-plugin-card.failed {
+    border-color: var(--vscode-errorForeground);
+}
+
+.dsh-plugin-card-summary {
+    padding: var(--dsh-space-2);
+    cursor: pointer;
+    list-style: none;
+}
+
+.dsh-plugin-card-summary::-webkit-details-marker,
+.dsh-plugin-group > summary::-webkit-details-marker {
+    display: none;
+}
+
+.dsh-plugin-card-summary::before,
+.dsh-plugin-group > summary::before {
+    content: "⌄";
+    flex: none;
+    color: var(--vscode-descriptionForeground);
+}
+
+.dsh-plugin-card[open] > .dsh-plugin-card-summary::before,
+.dsh-plugin-group[open] > summary::before {
+    content: "⌃";
+}
+
+.dsh-plugin-card-summary strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dsh-plugin-card-summary > span {
+    flex: none;
+    color: var(--vscode-descriptionForeground);
+    font-size: var(--dsh-font-xs);
+}
+
+.dsh-plugin-card-details {
+    display: grid;
+    gap: var(--dsh-space-2);
+    border-top: 1px solid var(--dsh-border);
+    padding: var(--dsh-space-2);
+}
+
+.dsh-plugin-card-details > code {
+    overflow-wrap: anywhere;
+    color: var(--vscode-descriptionForeground);
+    font-size: var(--dsh-font-xs);
+}
+
+.dsh-plugin-card-details dl {
+    display: grid;
+    gap: var(--dsh-space-1);
+    margin: 0;
+    font-size: var(--dsh-font-xs);
+}
+
+.dsh-plugin-card-details dl div {
+    display: grid;
+    grid-template-columns: minmax(72px, auto) minmax(0, 1fr);
+    gap: var(--dsh-space-2);
+}
+
+.dsh-plugin-card-details dt {
+    color: var(--vscode-descriptionForeground);
+}
+
+.dsh-plugin-card-details dd {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.dsh-plugin-broken {
+    padding: var(--dsh-space-2);
+    border-left: 3px solid var(--vscode-errorForeground);
+    color: var(--vscode-errorForeground);
+    font-size: var(--dsh-font-xs);
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.dsh-plugin-hint {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--dsh-space-1);
+    color: var(--vscode-descriptionForeground);
+    font-size: var(--dsh-font-xs);
+}
+
+.dsh-plugin-hint button {
+    padding: 0 var(--dsh-space-1);
+    border: 0;
+    color: var(--vscode-textLink-foreground);
+    background: transparent;
+}

@@ -388,6 +388,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private settingsPanel: DshSettingsPanelView | undefined;
     private readonly settingsNamespaces = new Map<string, DshSettingsNamespaceView>();
     private settingsPanelGeneration = 0;
+    private pluginInventoryGeneration = 0;
     private readonly changeReviews: ChangeReviewStore;
     private readonly toolDiffs: ToolDiffStore;
     private agentStatusChoice: { sessionId: string; candidateKey: string; label: string } | undefined;
@@ -466,6 +467,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                         break;
                     case "settings/document-updated":
                         ++this.settingsPanelGeneration;
+                        ++this.pluginInventoryGeneration;
                         this.settingsPanel = undefined;
                         this.settingsNamespaces.clear();
                         this.postState();
@@ -688,34 +690,108 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         if (this.settingsPanel?.open) {
             this.settingsPanel = undefined;
             this.settingsNamespaces.clear();
+            ++this.settingsPanelGeneration;
+            ++this.pluginInventoryGeneration;
             this.postState();
             return;
         }
         const generation = ++this.settingsPanelGeneration;
+        const inventoryGeneration = ++this.pluginInventoryGeneration;
         this.settingsPanel = {
             open: true,
             loading: true,
             writable: false,
             hasDocument: false,
             cards: [],
+            pluginInventory: { loading: true, entries: [] },
         };
         this.postState();
         try {
             await this.runtime.start(this.workspaceRoot());
-            const result = await this.runtime.describeSettings();
-            if (generation !== this.settingsPanelGeneration) return;
-            this.settingsNamespaces.clear();
-            for (const namespace of result.namespaces) this.settingsNamespaces.set(namespace.ns, namespace);
-            this.settingsPanel = presentSettingsPanel(result);
+            const [settingsResult, inventoryResult] = await Promise.allSettled([
+                this.runtime.describeSettings(),
+                this.runtime.pluginInventory(),
+            ]);
+            if (generation !== this.settingsPanelGeneration || inventoryGeneration !== this.pluginInventoryGeneration) return;
+            if (settingsResult.status === "fulfilled") {
+                this.settingsNamespaces.clear();
+                for (const namespace of settingsResult.value.namespaces) this.settingsNamespaces.set(namespace.ns, namespace);
+                this.settingsPanel = presentSettingsPanel(settingsResult.value);
+            } else {
+                this.settingsNamespaces.clear();
+                this.settingsPanel = {
+                    open: true,
+                    writable: false,
+                    hasDocument: false,
+                    cards: [],
+                    error: errorMessage(settingsResult.reason),
+                };
+                this.output.appendLine(`[dsh:settings] describe failed: ${errorMessage(settingsResult.reason)}`);
+            }
+            if (inventoryResult.status === "fulfilled") {
+                this.settingsPanel.pluginInventory = {
+                    entries: inventoryResult.value.entries,
+                    ...(inventoryResult.value.agentPresets === undefined
+                        ? {}
+                        : { agentPresets: inventoryResult.value.agentPresets }),
+                };
+            } else {
+                this.settingsPanel.pluginInventory = {
+                    entries: [],
+                    error: t("Plugins are temporarily unavailable."),
+                };
+                this.output.appendLine(`[dsh:plugin-inventory] list failed: ${errorMessage(inventoryResult.reason)}`);
+            }
         } catch (error) {
-            if (generation !== this.settingsPanelGeneration) return;
+            if (generation !== this.settingsPanelGeneration || inventoryGeneration !== this.pluginInventoryGeneration) return;
             this.settingsPanel = {
                 open: true,
                 writable: false,
                 hasDocument: false,
                 cards: [],
                 error: errorMessage(error),
+                pluginInventory: {
+                    entries: [],
+                    error: t("Plugins are temporarily unavailable."),
+                },
             };
+            this.output.appendLine(`[dsh:settings] panel load failed: ${errorMessage(error)}`);
+        }
+        this.postState();
+    }
+
+    private async refreshPluginInventory(): Promise<void> {
+        const panel = this.settingsPanel;
+        if (!panel?.open) return;
+        const generation = ++this.pluginInventoryGeneration;
+        this.settingsPanel = {
+            ...panel,
+            pluginInventory: { loading: true, entries: [] },
+        };
+        this.postState();
+        try {
+            await this.runtime.start(this.workspaceRoot());
+            const inventory = await this.runtime.pluginInventory();
+            if (generation !== this.pluginInventoryGeneration || !this.settingsPanel?.open) return;
+            this.settingsPanel = {
+                ...this.settingsPanel,
+                pluginInventory: {
+                    entries: inventory.entries,
+                    ...(inventory.agentPresets === undefined
+                        ? {}
+                        : { agentPresets: inventory.agentPresets }),
+                },
+            };
+        } catch (error) {
+            if (generation !== this.pluginInventoryGeneration || !this.settingsPanel?.open) return;
+            this.settingsPanel = {
+                ...this.settingsPanel,
+                pluginInventory: {
+                    entries: [],
+                    error: t("Plugins are temporarily unavailable."),
+                },
+            };
+            this.output.appendLine(`[dsh:plugin-inventory] refresh failed: ${errorMessage(error)}`);
         }
         this.postState();
     }
@@ -735,11 +811,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         if (ops.length === 0) return;
         const updated = await this.runtime.mutateSettings(namespaceId, ops, revision);
         this.settingsNamespaces.set(namespaceId, updated);
-        this.settingsPanel = presentSettingsPanel({
+        const refreshed = presentSettingsPanel({
             writable: panel.writable,
             hasDocument: panel.hasDocument,
             namespaces: [...this.settingsNamespaces.values()],
         });
+        this.settingsPanel = {
+            ...refreshed,
+            ...(panel.pluginInventory === undefined ? {} : { pluginInventory: panel.pluginInventory }),
+        };
         this.postState();
     }
 
@@ -978,6 +1058,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     break;
                 case "manageSettings":
                     await this.toggleSettingsPanel();
+                    break;
+                case "refreshPluginInventory":
+                    await this.refreshPluginInventory();
                     break;
                 case "openSettingsDocument":
                     await this.openBrowser();

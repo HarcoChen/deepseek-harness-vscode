@@ -488,6 +488,51 @@ export interface DshAgentPresetReadResult {
     description?: string;
 }
 
+export type DshPluginFiberPhase =
+    | "pending"
+    | "loading"
+    | "active"
+    | "failed"
+    | "unloading"
+    | null;
+
+export interface DshPluginInventoryEntry {
+    entryId: string;
+    moduleName: string;
+    enabled: boolean;
+    fiberPhase: DshPluginFiberPhase;
+}
+
+export type DshPluginPresetEnablement = boolean | "conditional";
+
+export interface DshPluginInventoryRow {
+    entryId: string | null;
+    moduleName: string;
+    enabled: DshPluginPresetEnablement;
+    condition?: string;
+    fiberPhase: DshPluginFiberPhase;
+}
+
+export interface DshPluginInventoryPreset {
+    id: string;
+    trust: "system" | "user";
+    name?: string;
+    isDefault: boolean;
+    broken?: string;
+    rows: DshPluginInventoryRow[];
+}
+
+export interface DshPluginInventorySnapshot {
+    entries: DshPluginInventoryEntry[];
+    agentPresets?: DshPluginInventoryPreset[];
+}
+
+/** Settings-owned state for the read-only plugin inventory tab. */
+export interface DshPluginInventoryPanelView extends DshPluginInventorySnapshot {
+    loading?: boolean;
+    error?: string;
+}
+
 export type DshAgentPresetOpenResult =
     | { opened: true }
     | { opened: false; path: string };
@@ -720,6 +765,7 @@ export interface DshSettingsPanelView {
     writable: boolean;
     hasDocument: boolean;
     cards: DshSettingsCardView[];
+    pluginInventory?: DshPluginInventoryPanelView;
     error?: string;
 }
 

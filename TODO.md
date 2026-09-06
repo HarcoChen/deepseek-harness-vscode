@@ -14,6 +14,10 @@ baseline、workspace 生命周期、能力端点、错误路径）全绿；**UI 
 prompt）。第 8 步的版本发布用 `npm run release` 执行，CHANGELOG
 [Unreleased] 已备好。
 
+本次增量消费 `pluginInventory/list`：Runtime 对 Loader 条目和 Agent preset
+组合做严格快照校验，设置面板提供全局/会话分组、生命周期相位、搜索和手动刷新；
+仍保持只读，不凭空添加插件管理动作。
+
 下方「契约基线」已按 `dsh-v0.1.2-rc.1` 与当前实现更新；`RPC_new.md` 与
 `RPC_ADAPTATION_PLAN.md` 仍保留为迁移审计和版本升级门禁。下次升级先按其 §14
 做 tag diff，再调整 runtime pin。
@@ -54,7 +58,7 @@ projection 集合由当前 Loader composition 决定，不再用旧版固定总�
 - **RC Remote unary**：统一走 `POST /api/<namespace>/<method>`，请求为
   `payload: {args: ...}`，由 `src/remote/unaryClient.ts` 严格校验 envelope、
   endpoint、rpcId、响应和 namespaced error。`DshRuntime` 当前消费 session、
-  workspace、subagents、goals、agentPresets、skills、commands、settings、
+  workspace、subagents、goals、agentPresets、pluginInventory、skills、commands、settings、
   credentials、llm、directoryPicker、fileReferences、
   sessionReferenceResolver 与 messageFeedback 等已挂载能力；生产代码不再
   依赖旧点号 endpoint map。
@@ -73,7 +77,7 @@ projection 集合由当前 Loader composition 决定，不再用旧版固定总�
   `fileReferences/list`、`sessionReferenceResolver/candidates` 已由 UI/Runtime
   消费；文件与会话引用在 404/旧 Runtime 时回退本地候选。`messageFeedback` 仍
   只有 RPC、响应校验和 CAS 骨架，前端入口待评测闭环；`pluginInventory/list`
-  尚未消费。所有 RC1 调用均经 `src/remote/`，不要再按已删除的
+  已接入设置面板只读清单。所有 RC1 调用均经 `src/remote/`，不要再按已删除的
   `src/harnessClient.ts`、`src/harnessProtocol.ts` 估算接入成本。
 
 ## P0：BUG修复
@@ -96,13 +100,9 @@ projection 已消费 14 个 key（goal、todos、tokenUsage、contextPressure、
 contextBreakdown、title、sessionStats、permissions、imageLimits、plan、
 subagentTiming、modelSelection、turnOutline、schedule）；且
 `GenericProjectionStore` 本就缓存全部 projection —— 以下多数条目是**纯呈现层
-工作**，不动传输。按性价比排序：
+工作**，不动传输。`pluginInventory/list` 已由 Runtime 严格校验并在设置面板
+按全局 Loader 与 Agent preset 组合分组展示；剩余候选按性价比排序：
 
-- [ ] **插件库存只读视图（`pluginInventory`）**：`pluginInventory/list` → `{entries: [{entryId, moduleName, enabled, fiberPhase}], agentPresets: [{id, trust, name, isDefault, rows: [{moduleName, enabled, fiberPhase, condition}]}]}`
-      （`dsh-v0.1.2-rc.1:packages/host/plugin-inventory/src/index.ts:65`、`types.ts`）。
-      Loader 条目与每个 preset 的插件组合 + Fiber 生命周期相位（`failed` 可见）。
-      可做设置页「插件与组合」标签或 Agent Preset 详情扩展；注意 MCP server 状态
-      仍无契约，下方「明确不做」的 MCP 条目不变。
 - [ ] **动态插件面板（`dynamic`，进阶）**：cordis-host-runner 暴露 `undefineFromPanel`、`run`、
       `runHostHalf`、`getClientCode`、`resolveRequestRun`（`dsh-v0.1.2-rc.1:packages/extensions/cordis-host-runner/src/index.ts:226,248,324,383,412`），
       配套 6 个未消费的 `cordis/*` 下行事件。最小可行：只读状态 + 移除 + `cordis/request-run`

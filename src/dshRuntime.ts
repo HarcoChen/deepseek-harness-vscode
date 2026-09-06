@@ -37,6 +37,7 @@ import {
     DshAgentPresetOpenResult,
     DshAgentPresetReadResult,
     DshAgentPresetSelectResult,
+    DshPluginInventorySnapshot,
     DshSessionRenameResult,
     DshSessionSearchResult,
     DshFileReferenceCandidate,
@@ -73,6 +74,7 @@ import {
     normalizeSessionReferenceCandidates,
 } from "./referenceCandidates";
 import { normalizeModelSelectionProjection } from "./modelSelection";
+import { normalizePluginInventory } from "./pluginInventory";
 
 type RuntimeListener = (status: RuntimeStatus) => void;
 type HarnessConnectedListener = () => void;
@@ -1532,6 +1534,15 @@ export class DshRuntime implements vscode.Disposable {
             authorable: result.authorable === true,
             hasDocument: result.hasDocument ?? result.authorable === true,
         };
+    }
+
+    public async pluginInventory(): Promise<DshPluginInventorySnapshot> {
+        const value = await this.apiClient.call<unknown>("pluginInventory/list", {});
+        const inventory = normalizePluginInventory(value);
+        if (!inventory) {
+            throw new RemoteProtocolError("Remote pluginInventory/list returned an invalid value");
+        }
+        return inventory;
     }
 
     public async selectAgentPreset(sessionId: string, agentPreset: string): Promise<DshAgentPresetSelectResult> {
