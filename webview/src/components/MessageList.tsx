@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef } from "react";
-import type { ChatMessage, DshMessageFeedbackStateView } from "../../../src/types";
+import type { ChatMessage } from "../../../src/types";
 import { postAction, subscribeRevealMessage } from "../bridge";
 import { t } from "../i18n";
 import { closestElement, handleMarkdownClick, handleMarkdownKeydown } from "./markdownEvents";
@@ -9,7 +9,6 @@ interface MessageListProps {
     messages: ChatMessage[];
     submitting: boolean;
     agentStatusLabel?: string;
-    messageFeedback?: DshMessageFeedbackStateView;
 }
 
 /** Structural equality for plain host-projected data (no functions, no cycles). */
@@ -65,7 +64,6 @@ export const MessageList = React.memo(function MessageList({
     messages,
     submitting,
     agentStatusLabel,
-    messageFeedback,
 }: MessageListProps): React.JSX.Element {
     const listRef = useRef<HTMLDivElement>(null);
     const stickToBottomRef = useRef(true);
@@ -124,11 +122,6 @@ export const MessageList = React.memo(function MessageList({
             onClick={onClick}
             onKeyDown={handleMarkdownKeydown}
         >
-            {messageFeedback?.status === "error" && messageFeedback.error ? (
-                <div className="dsh-feedback-status" role="status">
-                    {messageFeedback.error}
-                </div>
-            ) : null}
             {stableMessages.length === 0 ? (
                 <div className="dsh-empty">
                     <div className="dsh-empty-title">{t("Describe a task.")}</div>

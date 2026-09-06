@@ -497,7 +497,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                 void this.refreshDynamicPlugins();
                 void this.restorePersistedSession(this.workspaceRoot()).then(() => {
                     if (this.sessionId) {
-                        void this.refreshMessageFeedback(this.sessionId, true);
                         this.refreshModelCatalog(this.sessionId);
                         this.refreshSkillCatalog(this.sessionId);
                         this.refreshCommandCatalog(this.sessionId);
@@ -1767,7 +1766,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             this.clearNewSessionDraft();
         }
 
-        if (this.sessionId) void this.refreshMessageFeedback(this.sessionId);
         this.refreshModelCatalog(this.sessionId);
         this.refreshSkillCatalog(this.sessionId);
         this.refreshCommandCatalog(this.sessionId);
@@ -1824,7 +1822,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             }
             this.postState();
             await this.runtime.syncSession(sessionId);
-            void this.refreshMessageFeedback(sessionId);
             this.refreshModelCatalog(sessionId);
             this.refreshSkillCatalog(sessionId);
             this.refreshCommandCatalog(sessionId);
@@ -2259,7 +2256,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             } satisfies PersistedSession);
         }
         await this.runtime.syncSession(sessionId);
-        void this.refreshMessageFeedback(sessionId);
         this.refreshModelCatalog(sessionId);
         this.refreshSkillCatalog(sessionId);
         this.refreshCommandCatalog(sessionId);
@@ -2672,9 +2668,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             if (message.role !== "assistant" || message.state !== "committed") return message;
             const messageId = assistantFeedbackMessageId(snapshot, message.seq);
             if (!messageId) return message;
-            if (!state || state.status === "unavailable" || !this.runtime.getUrl()) {
-                return { ...message, messageId };
-            }
+            if (!state || state.status === "unavailable") return { ...message, messageId };
             const item = state.items.get(messageId);
             const error = state.errors.get(messageId);
             return {
@@ -3624,15 +3618,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             projectChatMessages(session, this.optimisticPrompts, this.sessionSkillNames()),
             this.focusMode,
         );
-        const messageFeedbackState = this.sessionId
-            ? this.messageFeedbackStates.get(this.sessionId)
-            : undefined;
-        const feedbackMessages = this.decorateMessageFeedback(
-            projectedMessages,
-            session,
-            messageFeedbackState,
-        );
-        const messageFeedback = this.messageFeedbackView(this.sessionId);
         if (this.sessionId) this.goalMutations.observe(this.sessionId, goalCell);
         const activeInteractions = session?.interactions.filter(
             (interaction) =>
@@ -3644,7 +3629,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         ) ?? [];
         const state: ChatViewState = {
             messages: this.renderMessages(
-                feedbackMessages,
+                projectedMessages,
                 `session:${this.sessionId ?? "none"}`,
                 this.sessionId,
             ),
@@ -3720,7 +3705,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             ...(schedule === undefined ? {} : { schedule }),
             ...(imageLimits === undefined ? {} : { imageLimits }),
             ...(plan === undefined ? {} : { plan }),
-            ...(messageFeedback === undefined ? {} : { messageFeedback }),
             interactions: activeInteractions.map((interaction) =>
                 interaction.kind === "approval"
                     ? {
