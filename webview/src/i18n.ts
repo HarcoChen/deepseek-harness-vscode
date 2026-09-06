@@ -137,6 +137,7 @@ const ZH_CN: Readonly<Record<string, string>> = {
     "Slash commands": "Slash 命令",
     "Skill candidates": "Skill 候选",
     "Add one-shot IDE context": "添加一次性 IDE context",
+    "Pre-fill the composer from a .dsh/prompts template": "用 .dsh/prompts 模板预填输入框",
     "Recent terminal command": "最近的终端命令",
     "The connected dsh server does not expose the /compact command. Update dsh or enable the command-compact package.": "当前连接的 dsh server 未提供 /compact command。请更新 dsh 或启用 command-compact package。",
     "Compacting": "正在压缩",

@@ -40,6 +40,7 @@ import { MarkdownRenderCache } from "./markdownRenderCache";
 import { samePath } from "./paths";
 import { presentSessionRows } from "./sessionCatalog";
 import { SessionCatalogCache } from "./sessionCatalogCache";
+import { listPromptTemplates, readPromptTemplate } from "./promptTemplates";
 import { MessageFeedbackController } from "./messageFeedbackController";
 import { SubagentController } from "./subagentController";
 import { projectionCell, projectionValue, type SessionStateSnapshot } from "./sessionStore";
@@ -889,6 +890,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
 
     /** Lets the user attach one of the commands captured by shell integration. */
+    /**
+     * Pre-fills the composer from a workspace prompt template under
+     * `.dsh/prompts`. Discovery is read-only and insertion is a visible draft
+     * — sending stays a separate, manual step.
+     */
+    public async insertPromptTemplate(): Promise<void> {
+        const workspaceRoot = this.workspaceRoot();
+        if (!workspaceRoot) {
+            throw new Error(t("Open a workspace first."));
+        }
+        const promptsRoot = vscode.Uri.joinPath(vscode.Uri.file(workspaceRoot), ".dsh", "prompts");
+        const templates = await listPromptTemplates(promptsRoot);
+        if (templates.length === 0) {
+            void vscode.window.showInformationMessage(
+                t("No prompt templates found under .dsh/prompts in this workspace."),
+            );
+            return;
+        }
+        const picked = await vscode.window.showQuickPick(
+            templates.map((entry) => ({
+                label: entry.label,
+                description: entry.path,
+                ...(entry.preview.length === 0 ? {} : { detail: entry.preview }),
+                path: entry.path,
+            })),
+            {
+                title: t("Prompt templates"),
+                placeHolder: t("The template becomes the composer draft; sending stays manual."),
+            },
+        );
+        if (!picked) return;
+        this.setComposerText(await readPromptTemplate(promptsRoot, picked.path));
+    }
+
     public async openTerminalCommandPicker(): Promise<void> {
         const records = this.terminalContext.recent();
         if (records.length === 0) {
@@ -1123,6 +1158,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     break;
                 case "openTerminalCommandPicker":
                     await this.openTerminalCommandPicker();
+                    break;
+                case "openPromptTemplatePicker":
+                    await this.insertPromptTemplate();
                     break;
                 case "captureAppShot":
                     await this.captureAppShot();

@@ -23,6 +23,7 @@
     "command.askAboutResource.title": "Ask About This Resource",
     "command.explainDebugState.title": "Explain Current Debug State",
     "command.openIdeContextPicker.title": "Manage IDE Context (/ide)",
+    "command.insertPromptTemplate.title": "Insert Prompt Template (/template)",
     "command.captureAppShot.title": "Capture AppShot",
     "command.configureApiKey.title": "Configure API Key",
     "command.manageProviders.title": "Manage Providers",

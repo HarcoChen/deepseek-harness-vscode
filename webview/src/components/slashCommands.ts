@@ -24,6 +24,7 @@ export interface SlashCommand {
  */
 export const IDE_SLASH_COMMANDS: ReadonlyArray<SlashCommand> = [
     { name: "/ide", description: t("Add one-shot IDE context"), action: { type: "openIdeContextPicker" }, origin: "ide" },
+    { name: "/template", description: t("Pre-fill the composer from a .dsh/prompts template"), action: { type: "openPromptTemplatePicker" }, origin: "ide" },
     { name: "/new", description: t("New session"), action: { type: "newSession" }, origin: "ide" },
     { name: "/search", description: t("Search sessions"), action: { type: "searchSession" }, origin: "ide" },
     { name: "/model", description: t("Select the current session model"), action: { type: "selectModel" }, origin: "ide" },

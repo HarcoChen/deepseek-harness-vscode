@@ -288,6 +288,11 @@
                 "icon": "$(settings)"
             },
             {
+                "command": "dsh.insertPromptTemplate",
+                "title": "%command.insertPromptTemplate.title%",
+                "category": "DSH"
+            },
+            {
                 "command": "dsh.captureAppShot",
                 "title": "%command.captureAppShot.title%",
                 "category": "DSH",

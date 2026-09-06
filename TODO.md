@@ -116,7 +116,7 @@ projection 集合由当前 Loader composition 决定，不再用旧版固定总�
 - [ ] **消息反馈 UI/评测闭环**。上游 `messageFeedback.list/put/delete` 已有公开 `@Remote`（`deepseek-harness/packages/feedback/message-feedback/src/index.ts:189,205,271`）；状态与 CAS 骨架已整体迁至 `src/messageFeedbackController.ts`（ChatViewProvider 仅转发两个 webview case），消息入口和反馈状态呈现仍未接回 Webview——`messageFeedbackView`/`decorateMessageFeedback` 保留在控制器中待接线。待评测、统计或导出闭环明确后再开放；反馈不写入 Session 日志、模型上下文或 telemetry。
 - [ ] **上下文用量与超限反馈补全**：发送前展示附件大小、截断与最终进入 prompt 的内容，支持移除大项。（基础用量与 `contextBreakdown` 占用归因已完成；不自动识别或分类秘密、个人信息等敏感内容，除非另有隐私策略和明确同意。）
 - [ ] **扩展 `@` 引用类型**：当前已有文件、目录、`@selection`、`@terminal`，以及 Runtime 侧 `fileReferences/list`、`sessionReferenceResolver/candidates` 候选；仍需 diagnostics、实际捕获范围展示，并补齐远程工作区实机验证。
-- [ ] **项目规则与 Prompt 模板（其他 DSH 扩展对照后的可做项）**：提供本地 Markdown 规则/提示模板的只读发现和显式选择，作为可见上下文附件或预填文本；没有公开 Memory 协议时不自动注入或生成隐式记忆。
+- [ ] **项目规则（Prompt 模板已交付，见下）**：提供本地规则 Markdown 的只读发现和显式选择，作为可见上下文附件；没有公开 Memory 协议时不自动注入或生成隐式记忆。
 
 ### 新 RPC（0.1.2-rc.1）解锁的功能候选（2026-09-06 对照 `dsh-v0.1.2-rc.1` 源码复核）
 
@@ -164,7 +164,8 @@ subagentTiming、modelSelection、turnOutline、schedule）；且
 当成 DSH 契约：
 
 - [ ] **`@diagnostics`**：附加用户主动选择的诊断项与范围，不默认把全工作区诊断送入 prompt。
-- [ ] **Prompt 模板**：发现 `.dsh/prompts` 下的本地 Markdown，只做可见预填，发送前由用户确认。
+- [x] **Prompt 模板**：发现 `.dsh/prompts` 下的本地 Markdown，只做可见预填，发送前由用户确认。
+      实现：`src/promptTemplates.ts` 只读发现（`.dsh/prompts/**/*.md`，限 100 个文件/4 层深/32 KiB，frontmatter `title` 或首个 `#` 标题作展示名，路径经 `..`/绝对路径校验）；入口为 Composer `/template` slash 命令与命令面板 `DSH: Insert Prompt Template`；选中后整篇成为输入框草稿（`setComposerText`），发送仍由用户手动完成。不做：自动注入、隐式记忆、规则文件作为上下文附件（后者见上方 P1 条目）。
 - [ ] **Runtime 连接模式与生命周期可见性**：补 `attach-only`/`auto` 等状态表达，不改变外部 Runtime 只复用、不接管的规则。
 - [ ] **轻量代码库搜索**：先复用 VS Code 文件/符号能力，用户选中结果后再附加；向量索引暂不默认开启。
 

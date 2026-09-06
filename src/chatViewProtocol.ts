@@ -38,6 +38,7 @@ export type ChatViewAction =
     | { type: "manageWorkspaces" }
     | { type: "openIdeContextPicker" }
     | { type: "openTerminalCommandPicker" }
+    | { type: "openPromptTemplatePicker" }
     | { type: "captureAppShot" }
     | { type: "removeContext"; id: string }
     | { type: "loadImage"; attachmentId: string }
@@ -223,6 +224,10 @@ export function parseChatViewAction(value: unknown): ChatViewAction | undefined 
         case "manageAgentPresets":
             return hasOnly(value, ["type", "protocol"])
                 ? { type: "manageAgentPresets" }
+                : undefined;
+        case "openPromptTemplatePicker":
+            return hasOnly(value, ["type", "protocol"])
+                ? { type: "openPromptTemplatePicker" }
                 : undefined;
         case "refreshPluginInventory":
             return hasOnly(value, ["type", "protocol"])
