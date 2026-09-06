@@ -39,6 +39,7 @@ import {
 import { MarkdownRenderCache } from "./markdownRenderCache";
 import { samePath } from "./paths";
 import { presentSessionRows } from "./sessionCatalog";
+import { SessionCatalogCache } from "./sessionCatalogCache";
 import { projectionCell, projectionValue, type SessionStateSnapshot } from "./sessionStore";
 import { isRemoteError } from "./remote/errors";
 import { presentHostBaseline } from "./hostState";
@@ -358,17 +359,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private readonly observedRunning = new Map<string, boolean>();
     private readonly completedWhileHidden = new Set<string>();
     private readonly selectedModels = new Map<string, SelectedModelSnapshot>();
-    private readonly modelCatalogs = new Map<string, DshSessionModelsResult>();
-    private readonly modelCatalogRequests = new Map<string, Promise<void>>();
-    private readonly modelCatalogGenerations = new Map<string, number>();
-    private readonly modelCatalogRefreshPending = new Set<string>();
+    private readonly modelCatalogs = new SessionCatalogCache<DshSessionModelsResult>();
     private readonly modelSelectionProjectionSeqs = new Map<string, number>();
-    private readonly skillCatalogs = new Map<string, DshSkillEntry[]>();
-    private readonly skillCatalogRequests = new Map<string, Promise<void>>();
-    private readonly commandCatalogs = new Map<string, DshCommandDescriptor[]>();
-    private readonly commandCatalogRequests = new Map<string, Promise<void>>();
-    private readonly commandCatalogGenerations = new Map<string, number>();
-    private readonly commandCatalogRefreshPending = new Set<string>();
+    private readonly skillCatalogs = new SessionCatalogCache<DshSkillEntry[]>();
+    private readonly commandCatalogs = new SessionCatalogCache<DshCommandDescriptor[]>();
     private readonly messageFeedbackStates = new Map<string, MessageFeedbackSessionState>();
     private readonly messageFeedbackRequests = new Map<string, Promise<void>>();
     private readonly messageFeedbackGenerations = new Map<string, number>();
@@ -462,7 +456,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                 // local cache and repull the visible session when possible.
                 switch (event) {
                     case "commands/change":
-                        this.invalidateCommandCatalogs();
+                        this.commandCatalogs.invalidate();
                         if (this.sessionId) this.refreshCommandCatalog(this.sessionId);
                         break;
                     case "agent-preset/selected":
@@ -471,7 +465,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                         break;
                     case "llm/adapters-updated":
                     case "credentials/reference-updated":
-                        this.invalidateModelCatalogs();
+                        this.modelCatalogs.invalidate();
                         if (this.sessionId) this.refreshModelCatalog(this.sessionId);
                         break;
                     case "settings/document-updated":
@@ -3239,25 +3233,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         }
     }
 
-    private invalidateModelCatalogs(): void {
-        this.modelCatalogs.clear();
-        for (const sessionId of this.modelCatalogRequests.keys()) {
-            this.modelCatalogRefreshPending.add(sessionId);
-            this.modelCatalogGenerations.set(
-                sessionId,
-                (this.modelCatalogGenerations.get(sessionId) ?? 0) + 1,
-            );
-        }
-    }
-
     private refreshModelCatalog(sessionId: string): void {
-        if (!this.runtime.getUrl() || this.modelCatalogs.has(sessionId) || this.modelCatalogRequests.has(sessionId)) {
-            return;
-        }
-        const generation = this.modelCatalogGenerations.get(sessionId) ?? 0;
-        const request = this.runtime.models(sessionId)
-            .then((catalog) => {
-                if (this.modelCatalogGenerations.get(sessionId) !== generation) return;
+        void this.modelCatalogs.pull(sessionId, {
+            gate: () => Boolean(this.runtime.getUrl()),
+            pull: () => this.runtime.models(sessionId),
+            apply: (catalog) => {
                 const selected = this.selectedModels.get(sessionId);
                 const projectionSelection = this.modelSelectionProjectionSeqs.has(sessionId)
                     ? selected?.selection
@@ -3287,35 +3267,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     });
                 }
                 if (this.sessionId === sessionId) this.postState();
-            })
-            .catch((error) => {
+            },
+            fail: (error) => {
                 this.output.appendLine(`[dsh:model] catalog refresh failed: ${errorMessage(error)}`);
-            })
-            .finally(() => {
-                this.modelCatalogRequests.delete(sessionId);
-                if (this.modelCatalogRefreshPending.delete(sessionId)) {
-                    this.refreshModelCatalog(sessionId);
-                }
-            });
-        this.modelCatalogRequests.set(sessionId, request);
+            },
+        });
     }
 
     private refreshSkillCatalog(sessionId: string): void {
-        if (!this.runtime.getUrl() || this.skillCatalogs.has(sessionId) || this.skillCatalogRequests.has(sessionId)) {
-            return;
-        }
-        const request = this.runtime.listSkills(sessionId)
-            .then((skills) => {
+        void this.skillCatalogs.pull(sessionId, {
+            gate: () => Boolean(this.runtime.getUrl()),
+            pull: () => this.runtime.listSkills(sessionId),
+            apply: (skills) => {
                 this.skillCatalogs.set(sessionId, skills);
                 if (this.sessionId === sessionId) this.postState();
-            })
-            .catch((error) => {
+            },
+            fail: (error) => {
                 this.output.appendLine(`[dsh:skills] catalog refresh failed: ${errorMessage(error)}`);
-            })
-            .finally(() => {
-                this.skillCatalogRequests.delete(sessionId);
-            });
-        this.skillCatalogRequests.set(sessionId, request);
+            },
+        });
     }
 
     /**
@@ -3384,26 +3354,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
      * commands alone.
      */
     private refreshCommandCatalog(sessionId: string): void {
-        if (
-            !this.runtime.getUrl() ||
-            this.commandRegistryUnavailable ||
-            this.commandCatalogs.has(sessionId) ||
-            this.commandCatalogRequests.has(sessionId)
-        ) {
-            return;
-        }
         void this.ensureCommandCatalog(sessionId);
-    }
-
-    private invalidateCommandCatalogs(): void {
-        this.commandCatalogs.clear();
-        for (const sessionId of this.commandCatalogRequests.keys()) {
-            this.commandCatalogRefreshPending.add(sessionId);
-            this.commandCatalogGenerations.set(
-                sessionId,
-                (this.commandCatalogGenerations.get(sessionId) ?? 0) + 1,
-            );
-        }
     }
 
     /**
@@ -3412,41 +3363,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
      * freshly created session cannot leak `/compact` to the model just because
      * its catalog had not arrived yet.
      */
-    private async ensureCommandCatalog(sessionId: string): Promise<void> {
-        const pending = this.commandCatalogRequests.get(sessionId);
-        if (pending) return pending;
-        if (
-            !this.runtime.getUrl() ||
-            this.commandRegistryUnavailable ||
-            this.commandCatalogs.has(sessionId)
-        ) {
-            return;
-        }
-        const generation = this.commandCatalogGenerations.get(sessionId) ?? 0;
-        const request = this.runtime.listCommands(sessionId)
-            .then((commands) => {
-                if (this.commandCatalogGenerations.get(sessionId) !== generation) return;
-                if (commands === undefined) {
-                    this.commandRegistryUnavailable = true;
-                    this.output.appendLine(
-                        "[dsh:commands] the connected Runtime serves no command registry; using IDE commands only",
-                    );
-                    return;
-                }
+    private ensureCommandCatalog(sessionId: string): Promise<void> {
+        return this.commandCatalogs.pull(sessionId, {
+            gate: () => Boolean(this.runtime.getUrl()) && !this.commandRegistryUnavailable,
+            pull: () => this.runtime.listCommands(sessionId),
+            apply: (commands) => {
                 this.commandCatalogs.set(sessionId, commands);
                 if (this.sessionId === sessionId) this.postState();
-            })
-            .catch((error) => {
+            },
+            absent: () => {
+                this.commandRegistryUnavailable = true;
+                this.output.appendLine(
+                    "[dsh:commands] the connected Runtime serves no command registry; using IDE commands only",
+                );
+            },
+            fail: (error) => {
                 this.output.appendLine(`[dsh:commands] catalog refresh failed: ${errorMessage(error)}`);
-            })
-            .finally(() => {
-                this.commandCatalogRequests.delete(sessionId);
-                if (this.commandCatalogRefreshPending.delete(sessionId)) {
-                    this.refreshCommandCatalog(sessionId);
-                }
-            });
-        this.commandCatalogRequests.set(sessionId, request);
-        return request;
+            },
+        });
     }
 
     private invalidateAgentPresetCatalog(): void {
