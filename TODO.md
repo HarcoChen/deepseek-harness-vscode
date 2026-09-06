@@ -24,6 +24,8 @@ inventory、停止、移除和拒绝待批准请求，Client half 继续交给 H
 本轮进一步核对了多根语义：DSH 的 Session/DirectoryPicker 契约均是单 `cwd`，
 因此 VS Code multi-root 不作为一个 DSH Session 支持；同时为扩展启动的 Runtime
 补上了异常退出后的 1s/5s/15s 有界退避恢复，外部 Runtime 仍只复用、不接管。
+另复核了一轮能力边界：敏感内容自动识别、MCP 市场、浏览器自动化和云端后台
+Agent 均不在当前契约范围内。
 
 下方「契约基线」已按 `dsh-v0.1.2-rc.1` 与当前实现更新；`RPC_new.md` 与
 `RPC_ADAPTATION_PLAN.md` 仍保留为迁移审计和版本升级门禁。下次升级先按其 §14
@@ -96,9 +98,9 @@ projection 集合由当前 Loader composition 决定，不再用旧版固定总�
 ## P1：功能（按性价比排序，均已核对公开契约）
 
 - [ ] **消息反馈 UI/评测闭环**。上游 `messageFeedback.list/put/delete` 已有公开 `@Remote`（`deepseek-harness/packages/feedback/message-feedback/src/index.ts:189,205,271`）；`src/dshRuntime.ts`、`src/messageFeedback.ts` 与 `ChatViewProvider` 已保留 RPC、响应校验及 CAS 操作骨架，但消息入口和反馈状态呈现暂未接回 Webview。待评测、统计或导出闭环明确后再开放；反馈不写入 Session 日志、模型上下文或 telemetry。
-- [ ] **上下文用量与超限反馈补全**：发送前展示附件大小、截断与敏感文件风险，支持移除大项并说明最终进入 prompt 的内容。（基础用量与 `contextBreakdown` 占用归因已完成，仍缺发送前风险/移除大项/最终 prompt 说明。）
+- [ ] **上下文用量与超限反馈补全**：发送前展示附件大小、截断与最终进入 prompt 的内容，支持移除大项。（基础用量与 `contextBreakdown` 占用归因已完成；不自动识别或分类秘密、个人信息等敏感内容，除非另有隐私策略和明确同意。）
 - [ ] **扩展 `@` 引用类型**：当前已有文件、目录、`@selection`、`@terminal`，以及 Runtime 侧 `fileReferences/list`、`sessionReferenceResolver/candidates` 候选；仍需 diagnostics、实际捕获范围展示，并补齐远程工作区实机验证。
-- [ ] **项目记忆入口**：优先复用 Harness 公开 Memory/Skill 能力；无公开协议时只提供打开明确文件的 IDE 操作，不自动把自建记忆拼入所有 prompt。
+- [ ] **项目规则与 Prompt 模板**：提供本地 Markdown 规则/提示模板的只读发现和显式选择，作为可见上下文附件或预填文本；没有公开 Memory 协议时不自动注入或生成隐式记忆。
 
 ### 新 RPC（0.1.2-rc.1）解锁的功能候选（2026-09-06 对照 `dsh-v0.1.2-rc.1` 源码复核）
 
@@ -119,7 +121,7 @@ subagentTiming、modelSelection、turnOutline、schedule）；且
       重新读取；`cordis/request-run` 显示待批准提示并可跳转 dsh Web UI。扩展不执行不可信的
       `getClientCode`，也不在 Extension Host 内模拟 Client half；浏览器侧运行与批准仍由
       Harness Web UI 负责。
-- [ ] **远程工作区支持评估**（激活上方 P1「Runtime 可靠性」的搁置项）：`dshRuntime` 已有
+- [ ] **远程工作区支持评估（暂只做测试）**（激活上方 P1「Runtime 可靠性」的搁置项）：`dshRuntime` 已有
       `directoryPicker/*`、`session/canOpenWorkspacePath|openWorkspacePath` wrapper；
       `fileReferences/list` 已接入 Composer，缺失时回退本地候选。Runtime 侧文件浏览/打开的协议解法基本就位，
       但 picker 尚未接入远程工作区专用 UI；剩验证 Remote SSH/WSL/Dev Container 下 Extension Host
@@ -140,12 +142,20 @@ subagentTiming、modelSelection、turnOutline、schedule）；且
 - [ ] **Session 内容查询**：`deepseek-harness/packages/session-query` 下 `@Remote` 计数为 0；`session.search` 已消费（rc.1 起为公开 remote，但部署可禁用索引），服务端全文检索管理面无公开入口。
 - [ ] **自动标题状态**：`deepseek-harness/packages/session/session-title` 下 `@Remote` 计数为 0；`title` projection 已消费，但生成状态与失败降级无公开契约。
 
+## P1：本地能力候选
+
+以下条目不假设新的 DSH RPC，优先保证用户主动选择、可见上下文和可撤销操作：
+
+- [ ] **`@diagnostics`**：附加用户主动选择的诊断项与范围，不默认把全工作区诊断送入 prompt。
+- [ ] **本地检查点设计**：先定义未跟踪文件、清理、并发修改和存储上限，再评估 shadow snapshot；现有原生 diff 不等于完整回滚。
+- [ ] **轻量代码库搜索**：先复用 VS Code 文件/符号能力，用户选中结果后再附加；向量索引暂不默认开启。
+
 ## P1：Runtime 可靠性
 
 - [ ] **跨平台 Runtime CI**：在 Windows、macOS、Linux 验证命令发现、启动、动态端口、健康检查、停止和进程树清理。
 - [ ] **GUI 启动 PATH 发现**：覆盖 macOS Finder/Dock、Linux Desktop 和 Windows npm 全局 bin 路径缺失场景，日志中说明最终使用的可执行文件。
 - [x] **多根工作区 Runtime 归属（契约边界已核对）**：DSH 的一个 Session 只有一个 `cwd`，DirectoryPicker 也只暴露一条 ancestry chain；因此不把 VS Code multi-root workspace 映射成一个 DSH Session。多个根目录应分别建立 DSH Workspace/Session，IDE 当前沿用第一个 VS Code workspace folder，并在文档中明确这一限制（上游证据：`deepseek-harness/packages/host/directory-picker/README.md`、`packages/api/session-controller/src/types.ts`）。
-- [ ] **远程工作区支持评估**：验证 Remote SSH、WSL、Dev Container 下 Extension Host、Runtime 和文件系统是否位于同侧；需要时使用 VS Code 端口转发。
+- [ ] **远程工作区矩阵验收（仅测试）**：验证 Remote SSH、WSL、Dev Container 下 Extension Host、Runtime 和文件系统是否位于同侧；需要时使用 VS Code 端口转发，不把测试结果包装成已支持功能。
       文件位置点击现已在本地边界检查失败时回落到 `session/openWorkspacePath`；剩余
       `directoryPicker/pick` / `directoryPicker/list` / `directoryPicker/createDirectory` 三条目录选择 RPC
       尚未接入专用 picker。需在 Remote SSH/WSL/Dev Container 实机确认 Extension Host、
