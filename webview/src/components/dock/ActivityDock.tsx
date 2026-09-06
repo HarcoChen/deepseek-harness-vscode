@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { t } from "../../i18n";
 import { canSwitchPermissions, type ActivityDockState } from "../../state";
 import { ChangesPanel } from "./ChangesPanel";
+import { DynamicPluginsPanel } from "./DynamicPluginsPanel";
 import { GoalPanel } from "./GoalPanel";
 import { JobsPanel } from "./JobsPanel";
 import { PermissionsPanel } from "./PermissionsPanel";
@@ -10,7 +11,7 @@ import { SchedulePanel } from "./SchedulePanel";
 import { SubagentsPanel } from "./SubagentsPanel";
 import { TodosPanel } from "./TodosPanel";
 
-type DockTab = "todos" | "goal" | "queue" | "changes" | "subagents" | "jobs" | "schedule" | "permissions";
+type DockTab = "todos" | "goal" | "queue" | "changes" | "subagents" | "jobs" | "schedule" | "permissions" | "dynamicPlugins";
 
 interface TabDef {
     id: DockTab;
@@ -28,6 +29,7 @@ interface ActivityDockProps {
     todos: ActivityDockState["todos"];
     schedule: ActivityDockState["schedule"];
     permissions: ActivityDockState["permissions"];
+    dynamicPlugins: ActivityDockState["dynamicPlugins"];
     commands: ActivityDockState["commands"];
     sessionId: ActivityDockState["sessionId"];
     sessionRunning: boolean;
@@ -44,6 +46,7 @@ export const ActivityDock = React.memo(function ActivityDock({
     todos,
     schedule,
     permissions,
+    dynamicPlugins,
     commands,
     sessionId,
     sessionRunning,
@@ -72,6 +75,10 @@ export const ActivityDock = React.memo(function ActivityDock({
     if (jobs.length) tabs.push({ id: "jobs", label: "Jobs", count: jobs.length });
     if (schedule?.length) tabs.push({ id: "schedule", label: t("Schedule"), count: schedule.length });
     if (permissions) tabs.push({ id: "permissions", label: t("Permissions") });
+    if (dynamicPlugins && (dynamicPlugins.loading || dynamicPlugins.error !== undefined || dynamicPlugins.rows.length > 0)) {
+        const pending = dynamicPlugins.rows.filter((row) => row.latestRun?.status === "awaiting-approval").length;
+        tabs.push({ id: "dynamicPlugins", label: t("Dynamic plugins"), count: pending || dynamicPlugins.rows.length || undefined });
+    }
 
     const available = tabs.map((tab) => tab.id).join(",");
     useEffect(() => {
@@ -166,6 +173,9 @@ export const ActivityDock = React.memo(function ActivityDock({
                     {!collapsed && selectedTab === "jobs" && tab.id === "jobs" ? <JobsPanel jobs={jobs} /> : null}
                     {!collapsed && selectedTab === "schedule" && tab.id === "schedule" && schedule ? <SchedulePanel schedule={schedule} /> : null}
                     {!collapsed && selectedTab === "permissions" && tab.id === "permissions" && permissions ? <PermissionsPanel permissions={permissions} switchable={canSwitchPermissions(commands)} /> : null}
+                    {!collapsed && selectedTab === "dynamicPlugins" && tab.id === "dynamicPlugins" && dynamicPlugins ? (
+                        <DynamicPluginsPanel plugins={dynamicPlugins} currentSessionId={sessionId} />
+                    ) : null}
                 </div>
             ))}
         </div>

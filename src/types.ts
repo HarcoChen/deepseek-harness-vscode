@@ -533,6 +533,104 @@ export interface DshPluginInventoryPanelView extends DshPluginInventorySnapshot 
     error?: string;
 }
 
+export type DshDynamicPluginRunMode = "run" | "update";
+
+export type DshDynamicPluginRunStatus =
+    | "awaiting-approval"
+    | "starting-host"
+    | "client-pending"
+    | "running"
+    | "waiting"
+    | "rejected"
+    | "failed"
+    | "cancelled"
+    | "stopped";
+
+export type DshDynamicPluginHalfStatus =
+    | "absent"
+    | "pending"
+    | "stopped"
+    | "running"
+    | "waiting"
+    | "failed";
+
+export interface DshDynamicPluginPackage {
+    packageId: string;
+    name: string;
+    purpose: string;
+    hasHostHalf: boolean;
+    hasClientHalf: boolean;
+}
+
+export interface DshDynamicPluginHalf {
+    status: DshDynamicPluginHalfStatus;
+    waitingFor: string[];
+    error?: string;
+}
+
+export type DshDynamicPluginDiagnosticPhase =
+    | "approval"
+    | "host-load"
+    | "host-apply"
+    | "client-load"
+    | "client-apply"
+    | "client-render";
+
+export interface DshDynamicPluginDiagnostic {
+    phase: DshDynamicPluginDiagnosticPhase;
+    message: string;
+    stack?: string;
+    pluginId: string;
+    packageId: string;
+    pluginRunId: string;
+}
+
+export interface DshDynamicPluginRunAttempt {
+    pluginRunId: string;
+    packageId: string;
+    mode: DshDynamicPluginRunMode;
+    status: DshDynamicPluginRunStatus;
+    approvalRequestId?: string;
+    requiresApproval?: boolean;
+    host: DshDynamicPluginHalf;
+    client: DshDynamicPluginHalf;
+    error?: DshDynamicPluginDiagnostic;
+}
+
+export interface DshDynamicPluginActiveRun {
+    pluginRunId: string;
+    packageId: string;
+}
+
+export interface DshDynamicPluginRow {
+    pluginId: string;
+    agentId: string;
+    packages: DshDynamicPluginPackage[];
+    currentPackageId?: string;
+    nextPackageId?: string;
+    activeRun?: DshDynamicPluginActiveRun;
+    latestRun?: DshDynamicPluginRunAttempt;
+}
+
+/** Activity-dock state for the optional dynamic Cordis plugin runner. */
+export interface DshDynamicPluginPanelView {
+    rows: DshDynamicPluginRow[];
+    loading?: boolean;
+    error?: string;
+}
+
+export type DshDynamicPluginStopResult =
+    | { ok: true }
+    | { ok: false; reason: "plugin-missing" | "not-running"; message: string };
+
+export type DshDynamicPluginRemoveResult =
+    | { ok: true; wasRunning: boolean }
+    | { ok: false; reason: "plugin-missing"; message: string };
+
+export interface DshDynamicPluginResolveResult {
+    accepted: boolean;
+}
+
 export type DshAgentPresetOpenResult =
     | { opened: true }
     | { opened: false; path: string };
@@ -1044,6 +1142,7 @@ export interface ChatViewState {
     context: DshContextItem[];
     fileReferenceCandidates?: DshReferenceCandidate[];
     settings?: DshSettingsPanelView;
+    dynamicPlugins?: DshDynamicPluginPanelView;
     selection?: DshContextItem;
     selectionEnabled: boolean;
     status: RuntimeStatus;

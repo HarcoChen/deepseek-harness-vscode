@@ -16,7 +16,8 @@ prompt）。第 8 步的版本发布用 `npm run release` 执行，CHANGELOG
 
 本次增量消费 `pluginInventory/list`：Runtime 对 Loader 条目和 Agent preset
 组合做严格快照校验，设置面板提供全局/会话分组、生命周期相位、搜索和手动刷新；
-仍保持只读，不凭空添加插件管理动作。
+仍保持只读，不凭空添加插件管理动作。随后接入 dynamic Cordis Host 面板：
+inventory、停止、移除和拒绝待批准请求，Client half 继续交给 Harness Web UI。
 
 下方「契约基线」已按 `dsh-v0.1.2-rc.1` 与当前实现更新；`RPC_new.md` 与
 `RPC_ADAPTATION_PLAN.md` 仍保留为迁移审计和版本升级门禁。下次升级先按其 §14
@@ -58,7 +59,7 @@ projection 集合由当前 Loader composition 决定，不再用旧版固定总�
 - **RC Remote unary**：统一走 `POST /api/<namespace>/<method>`，请求为
   `payload: {args: ...}`，由 `src/remote/unaryClient.ts` 严格校验 envelope、
   endpoint、rpcId、响应和 namespaced error。`DshRuntime` 当前消费 session、
-  workspace、subagents、goals、agentPresets、pluginInventory、skills、commands、settings、
+  workspace、subagents、goals、agentPresets、pluginInventory、dynamicCordisRunner、skills、commands、settings、
   credentials、llm、directoryPicker、fileReferences、
   sessionReferenceResolver 与 messageFeedback 等已挂载能力；生产代码不再
   依赖旧点号 endpoint map。
@@ -77,7 +78,8 @@ projection 集合由当前 Loader composition 决定，不再用旧版固定总�
   `fileReferences/list`、`sessionReferenceResolver/candidates` 已由 UI/Runtime
   消费；文件与会话引用在 404/旧 Runtime 时回退本地候选。`messageFeedback` 仍
   只有 RPC、响应校验和 CAS 骨架，前端入口待评测闭环；`pluginInventory/list`
-  已接入设置面板只读清单。所有 RC1 调用均经 `src/remote/`，不要再按已删除的
+  已接入设置面板只读清单；动态插件 inventory/stop/remove/decline 已接入
+  Activity Dock（源码不在 Extension Host 执行）。所有 RC1 调用均经 `src/remote/`，不要再按已删除的
   `src/harnessClient.ts`、`src/harnessProtocol.ts` 估算接入成本。
 
 ## P0：BUG修复
@@ -93,9 +95,9 @@ projection 集合由当前 Loader composition 决定，不再用旧版固定总�
 
 ### 新 RPC（0.1.2-rc.1）解锁的功能候选（2026-09-06 对照 `dsh-v0.1.2-rc.1` 源码复核）
 
-适配完成后（上一节），RC Remote 的消费面盘点：18 个下行事件已消费 12 个
-（catalog 6 个 + approval/question waterfall 2 个 + chatView 失效刷新 4 个，
-未消费的 6 个 `cordis/*` 见下）；已注册 session
+适配完成后（上一节），RC Remote 的消费面盘点：18 个下行事件已消费 16 个
+（catalog 6 个 + approval/question waterfall 2 个 + chatView 失效刷新 4 个 +
+dynamic 插件刷新 4 个，未消费的 2 个 `cordis/inspect-*` 见下）；已注册 session
 projection 已消费 14 个 key（goal、todos、tokenUsage、contextPressure、
 contextBreakdown、title、sessionStats、permissions、imageLimits、plan、
 subagentTiming、modelSelection、turnOutline、schedule）；且
@@ -103,10 +105,13 @@ subagentTiming、modelSelection、turnOutline、schedule）；且
 工作**，不动传输。`pluginInventory/list` 已由 Runtime 严格校验并在设置面板
 按全局 Loader 与 Agent preset 组合分组展示；剩余候选按性价比排序：
 
-- [ ] **动态插件面板（`dynamic`，进阶）**：cordis-host-runner 暴露 `undefineFromPanel`、`run`、
-      `runHostHalf`、`getClientCode`、`resolveRequestRun`（`dsh-v0.1.2-rc.1:packages/extensions/cordis-host-runner/src/index.ts:226,248,324,383,412`），
-      配套 6 个未消费的 `cordis/*` 下行事件。最小可行：只读状态 + 移除 + `cordis/request-run`
-      审批联动；`getClientCode` 渲染动态插件 client half 属独立大项，暂不做。
+- [x] **动态插件面板（`dynamic`，进阶，Host 侧）**：已消费
+      `dynamicCordisRunner/inventory`、`stopFromPanel`、`undefineFromPanel` 与
+      `resolveRequestRun`（拒绝待批准请求），并在 Activity Dock 展示按会话归属的只读状态、
+      package/Host half/Client half、等待服务和失败诊断。6 个 `cordis/*` 下行事件会触发
+      重新读取；`cordis/request-run` 显示待批准提示并可跳转 dsh Web UI。扩展不执行不可信的
+      `getClientCode`，也不在 Extension Host 内模拟 Client half；浏览器侧运行与批准仍由
+      Harness Web UI 负责。
 - [ ] **远程工作区支持评估**（激活上方 P1「Runtime 可靠性」的搁置项）：`dshRuntime` 已有
       `directoryPicker/*`、`session/canOpenWorkspacePath|openWorkspacePath` wrapper；
       `fileReferences/list` 已接入 Composer，缺失时回退本地候选。Runtime 侧文件浏览/打开的协议解法基本就位，

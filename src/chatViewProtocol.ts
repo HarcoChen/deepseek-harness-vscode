@@ -23,6 +23,10 @@ export type ChatViewAction =
     | { type: "manageProviders" }
     | { type: "manageSettings" }
     | { type: "refreshPluginInventory" }
+    | { type: "refreshDynamicPlugins" }
+    | { type: "stopDynamicPlugin"; sessionId: string; pluginId: string }
+    | { type: "removeDynamicPlugin"; sessionId: string; pluginId: string }
+    | { type: "declineDynamicPlugin"; requestId: string; pluginId: string }
     | { type: "openSettingsDocument" }
     | {
           type: "mutateSettings";
@@ -224,6 +228,37 @@ export function parseChatViewAction(value: unknown): ChatViewAction | undefined 
             return hasOnly(value, ["type", "protocol"])
                 ? { type: "refreshPluginInventory" }
                 : undefined;
+        case "refreshDynamicPlugins":
+            return hasOnly(value, ["type", "protocol"])
+                ? { type: "refreshDynamicPlugins" }
+                : undefined;
+        case "stopDynamicPlugin":
+        case "removeDynamicPlugin":
+            if (
+                !hasOnly(value, ["type", "sessionId", "pluginId", "protocol"]) ||
+                !nonEmptyString(value.sessionId) ||
+                value.sessionId.length > 256 ||
+                !nonEmptyString(value.pluginId) ||
+                value.pluginId.length > 256
+            ) return undefined;
+            return {
+                type: value.type,
+                sessionId: value.sessionId,
+                pluginId: value.pluginId,
+            } as ChatViewAction;
+        case "declineDynamicPlugin":
+            if (
+                !hasOnly(value, ["type", "requestId", "pluginId", "protocol"]) ||
+                !nonEmptyString(value.requestId) ||
+                value.requestId.length > 256 ||
+                !nonEmptyString(value.pluginId) ||
+                value.pluginId.length > 256
+            ) return undefined;
+            return {
+                type: "declineDynamicPlugin",
+                requestId: value.requestId,
+                pluginId: value.pluginId,
+            };
         case "selectReasoningEffort":
             return hasOnly(value, ["type", "effort"]) &&
                 nonEmptyString(value.effort) &&

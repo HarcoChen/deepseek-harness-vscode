@@ -42,6 +42,7 @@ export function App(): React.JSX.Element {
                     todos={state.todos}
                     schedule={state.schedule}
                     permissions={state.permissions}
+                    dynamicPlugins={state.dynamicPlugins}
                     commands={state.commands}
                     sessionId={state.sessionId}
                     sessionRunning={state.sessionStatus?.running === true}

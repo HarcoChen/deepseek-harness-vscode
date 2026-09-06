@@ -682,3 +682,194 @@ button {
     color: var(--vscode-textLink-foreground);
     background: transparent;
 }
+
+/* ---------- dynamic Cordis plugin activity ---------- */
+
+.dsh-dynamic-plugins {
+    display: grid;
+    gap: var(--dsh-space-2);
+    padding: var(--dsh-space-3);
+}
+
+.dsh-dynamic-plugins-head,
+.dsh-dynamic-plugin-row-head,
+.dsh-dynamic-plugin-actions,
+.dsh-dynamic-plugin-facts {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--dsh-space-2);
+}
+
+.dsh-dynamic-plugins-head > div {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+.dsh-dynamic-plugins-head small,
+.dsh-dynamic-plugin-meta,
+.dsh-dynamic-plugin-facts,
+.dsh-dynamic-plugin-waiting,
+.dsh-dynamic-plugin-details,
+.dsh-dynamic-plugin-approval {
+    color: var(--vscode-descriptionForeground);
+    font-size: var(--dsh-font-xs);
+}
+
+.dsh-dynamic-plugins-head button,
+.dsh-dynamic-plugin-actions button,
+.dsh-dynamic-plugin-show-all {
+    border: 1px solid var(--dsh-border);
+    border-radius: var(--dsh-radius-sm);
+    padding: var(--dsh-space-1) var(--dsh-space-2);
+    color: inherit;
+    background: var(--vscode-button-secondaryBackground);
+    cursor: pointer;
+    font-size: var(--dsh-font-xs);
+}
+
+.dsh-dynamic-plugins-head button:disabled,
+.dsh-dynamic-plugin-actions button:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.dsh-dynamic-plugin-rows {
+    display: grid;
+    gap: var(--dsh-space-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.dsh-dynamic-plugin-row {
+    display: grid;
+    gap: var(--dsh-space-1);
+    padding: var(--dsh-space-2);
+    border: 1px solid var(--dsh-border);
+    border-radius: var(--dsh-radius-sm);
+    background: var(--vscode-editor-background);
+}
+
+.dsh-dynamic-plugin-row.awaiting-approval {
+    border-color: var(--vscode-charts-yellow);
+}
+
+.dsh-dynamic-plugin-row.failed {
+    border-color: var(--vscode-errorForeground);
+}
+
+.dsh-dynamic-plugin-row.running {
+    border-color: var(--vscode-testing-iconPassed, var(--dsh-status-ok));
+}
+
+.dsh-dynamic-plugin-row-head strong,
+.dsh-dynamic-plugin-purpose,
+.dsh-dynamic-plugin-meta {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.dsh-dynamic-plugin-status {
+    flex: none;
+    color: var(--vscode-descriptionForeground);
+}
+
+.dsh-dynamic-plugin-row.awaiting-approval .dsh-dynamic-plugin-status,
+.dsh-dynamic-plugin-row.failed .dsh-dynamic-plugin-status {
+    color: var(--vscode-errorForeground);
+}
+
+.dsh-dynamic-plugin-purpose {
+    white-space: pre-wrap;
+}
+
+.dsh-dynamic-plugin-facts {
+    justify-content: flex-start;
+}
+
+.dsh-dynamic-plugin-facts span {
+    padding: 1px var(--dsh-space-1);
+    border: 1px solid var(--dsh-border);
+    border-radius: var(--dsh-radius-sm);
+}
+
+.dsh-dynamic-plugin-waiting {
+    overflow-wrap: anywhere;
+}
+
+.dsh-dynamic-plugin-error {
+    padding: var(--dsh-space-1) var(--dsh-space-2);
+    border-left: 3px solid var(--vscode-errorForeground);
+    color: var(--vscode-errorForeground);
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.dsh-dynamic-plugin-error small {
+    font-size: inherit;
+}
+
+.dsh-dynamic-plugin-approval {
+    padding: var(--dsh-space-1) var(--dsh-space-2);
+    border-left: 3px solid var(--vscode-charts-yellow);
+    color: var(--vscode-charts-yellow);
+}
+
+.dsh-dynamic-plugin-actions {
+    justify-content: flex-start;
+}
+
+.dsh-dynamic-plugin-actions button.danger {
+    color: var(--vscode-errorForeground);
+}
+
+.dsh-dynamic-plugin-toggle,
+.dsh-dynamic-plugin-show-all {
+    color: var(--vscode-textLink-foreground);
+    background: transparent;
+}
+
+.dsh-dynamic-plugin-details {
+    display: grid;
+    gap: var(--dsh-space-1);
+    border-top: 1px solid var(--dsh-border);
+    padding-top: var(--dsh-space-2);
+}
+
+.dsh-dynamic-plugin-details > div {
+    display: grid;
+    grid-template-columns: minmax(90px, auto) minmax(0, 1fr);
+    gap: var(--dsh-space-2);
+}
+
+.dsh-dynamic-plugin-details code,
+.dsh-dynamic-plugin-details small {
+    overflow-wrap: anywhere;
+}
+
+.dsh-dynamic-plugin-details details {
+    margin-top: var(--dsh-space-1);
+}
+
+.dsh-dynamic-plugin-details details > summary {
+    cursor: pointer;
+}
+
+.dsh-dynamic-plugin-details details ul {
+    display: grid;
+    gap: var(--dsh-space-1);
+    margin: var(--dsh-space-1) 0 0;
+    padding-left: var(--dsh-space-4);
+}
+
+.dsh-dynamic-plugin-details details li {
+    overflow-wrap: anywhere;
+}
+
+.dsh-dynamic-plugin-details details small {
+    display: block;
+    color: var(--vscode-descriptionForeground);
+}

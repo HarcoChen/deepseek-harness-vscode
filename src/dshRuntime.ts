@@ -37,6 +37,10 @@ import {
     DshAgentPresetOpenResult,
     DshAgentPresetReadResult,
     DshAgentPresetSelectResult,
+    DshDynamicPluginRemoveResult,
+    DshDynamicPluginResolveResult,
+    DshDynamicPluginRow,
+    DshDynamicPluginStopResult,
     DshPluginInventorySnapshot,
     DshSessionRenameResult,
     DshSessionSearchResult,
@@ -74,6 +78,12 @@ import {
     normalizeSessionReferenceCandidates,
 } from "./referenceCandidates";
 import { normalizeModelSelectionProjection } from "./modelSelection";
+import {
+    normalizeDynamicPluginInventory,
+    normalizeDynamicPluginRemoveResult,
+    normalizeDynamicPluginResolveResult,
+    normalizeDynamicPluginStopResult,
+} from "./dynamicPlugins";
 import { normalizePluginInventory } from "./pluginInventory";
 
 type RuntimeListener = (status: RuntimeStatus) => void;
@@ -1543,6 +1553,81 @@ export class DshRuntime implements vscode.Disposable {
             throw new RemoteProtocolError("Remote pluginInventory/list returned an invalid value");
         }
         return inventory;
+    }
+
+    /** Reads the optional frame-wide dynamic Cordis plugin registry. */
+    public async dynamicPluginInventory(): Promise<DshDynamicPluginRow[] | undefined> {
+        try {
+            const value = await this.apiClient.call<unknown>("dynamicCordisRunner/inventory", {});
+            const rows = normalizeDynamicPluginInventory(value);
+            if (!rows) {
+                throw new RemoteProtocolError(
+                    "Remote dynamicCordisRunner/inventory returned an invalid value",
+                );
+            }
+            return rows;
+        } catch (error) {
+            // The dynamic runner is an optional composition. Older or minimal
+            // Runtimes simply do not mount this namespace.
+            if (error instanceof RemoteHttpError && error.status === 404) return undefined;
+            throw error;
+        }
+    }
+
+    public async stopDynamicPlugin(
+        sessionId: string,
+        pluginId: string,
+    ): Promise<DshDynamicPluginStopResult> {
+        const value = await this.apiClient.call<unknown>("dynamicCordisRunner/stopFromPanel", {
+            agentId: sessionId,
+            pluginId,
+        });
+        const result = normalizeDynamicPluginStopResult(value);
+        if (!result) {
+            throw new RemoteProtocolError(
+                "Remote dynamicCordisRunner/stopFromPanel returned an invalid value",
+            );
+        }
+        return result;
+    }
+
+    public async removeDynamicPlugin(
+        sessionId: string,
+        pluginId: string,
+    ): Promise<DshDynamicPluginRemoveResult> {
+        const value = await this.apiClient.call<unknown>("dynamicCordisRunner/undefineFromPanel", {
+            agentId: sessionId,
+            pluginId,
+        });
+        const result = normalizeDynamicPluginRemoveResult(value);
+        if (!result) {
+            throw new RemoteProtocolError(
+                "Remote dynamicCordisRunner/undefineFromPanel returned an invalid value",
+            );
+        }
+        return result;
+    }
+
+    /** Declines a pending browser Client activation without executing plugin code. */
+    public async declineDynamicPlugin(
+        requestId: string,
+        pluginRunId?: string,
+    ): Promise<DshDynamicPluginResolveResult> {
+        const value = await this.apiClient.call<unknown>("dynamicCordisRunner/resolveRequestRun", {
+            requestId,
+            resolution: {
+                ok: false,
+                reason: "rejected",
+                ...(pluginRunId === undefined ? {} : { pluginRunId }),
+            },
+        });
+        const result = normalizeDynamicPluginResolveResult(value);
+        if (!result) {
+            throw new RemoteProtocolError(
+                "Remote dynamicCordisRunner/resolveRequestRun returned an invalid value",
+            );
+        }
+        return result;
     }
 
     public async selectAgentPreset(sessionId: string, agentPreset: string): Promise<DshAgentPresetSelectResult> {

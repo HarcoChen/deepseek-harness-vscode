@@ -79,6 +79,7 @@ import {
     ChatImageView,
     ChatMessage,
     DshAgentPresetEntry,
+    DshDynamicPluginPanelView,
     DshHistoryEntry,
     DshImageLimitsView,
     DshImageUpload,
@@ -389,6 +390,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private readonly settingsNamespaces = new Map<string, DshSettingsNamespaceView>();
     private settingsPanelGeneration = 0;
     private pluginInventoryGeneration = 0;
+    private dynamicPlugins: DshDynamicPluginPanelView | undefined;
+    private dynamicPluginsGeneration = 0;
     private readonly changeReviews: ChangeReviewStore;
     private readonly toolDiffs: ToolDiffStore;
     private agentStatusChoice: { sessionId: string; candidateKey: string; label: string } | undefined;
@@ -446,7 +449,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     this.agentPresetDocuments.delete(document.uri.toString());
                 }
             }),
-            runtime.onDidChange(() => this.schedulePostState()),
+            runtime.onDidChange((status) => {
+                if (status.state === "stopped") {
+                    ++this.dynamicPluginsGeneration;
+                    this.dynamicPlugins = undefined;
+                }
+                this.schedulePostState();
+            }),
             agentStatusPresentations?.onDidChange(() => this.schedulePostState()) ?? new vscode.Disposable(() => {}),
             runtime.onDidRemoteEvent((event) => {
                 // Forwarded RC events carry no diff. Invalidate the affected
@@ -472,6 +481,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                         this.settingsNamespaces.clear();
                         this.postState();
                         break;
+                    case "cordis/dynamic-package":
+                    case "cordis/dynamic-retract":
+                    case "cordis/request-run":
+                    case "cordis/request-run-resolved":
+                        void this.refreshDynamicPlugins();
+                        break;
                     default:
                         break;
                 }
@@ -479,6 +494,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             runtime.onDidHarnessConnect(() => {
                 this.commandRegistryUnavailable = false;
                 this.commandCatalogs.clear();
+                void this.refreshDynamicPlugins();
                 void this.restorePersistedSession(this.workspaceRoot()).then(() => {
                     if (this.sessionId) {
                         this.refreshModelCatalog(this.sessionId);
@@ -796,6 +812,62 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.postState();
     }
 
+    private async refreshDynamicPlugins(): Promise<void> {
+        const generation = ++this.dynamicPluginsGeneration;
+        const previousRows = this.dynamicPlugins?.rows ?? [];
+        this.dynamicPlugins = { rows: previousRows, loading: true };
+        this.postState();
+        try {
+            await this.runtime.start(this.workspaceRoot());
+            const rows = await this.runtime.dynamicPluginInventory();
+            if (generation !== this.dynamicPluginsGeneration) return;
+            if (rows === undefined) {
+                this.dynamicPlugins = undefined;
+            } else {
+                this.dynamicPlugins = { rows };
+            }
+        } catch (error) {
+            if (generation !== this.dynamicPluginsGeneration) return;
+            this.dynamicPlugins = {
+                rows: previousRows,
+                error: t("Dynamic plugins are temporarily unavailable."),
+            };
+            this.output.appendLine(`[dsh:dynamic-plugins] inventory failed: ${errorMessage(error)}`);
+        }
+        this.postState();
+    }
+
+    private async stopDynamicPlugin(sessionId: string, pluginId: string): Promise<void> {
+        const present = this.dynamicPlugins?.rows.some(
+            (candidate) => candidate.agentId === sessionId && candidate.pluginId === pluginId,
+        );
+        if (!present) throw new Error(t("Dynamic plugin state is out of date. Refresh and try again."));
+        const result = await this.runtime.stopDynamicPlugin(sessionId, pluginId);
+        if (!result.ok) throw new Error(result.message);
+        await this.refreshDynamicPlugins();
+    }
+
+    private async removeDynamicPlugin(sessionId: string, pluginId: string): Promise<void> {
+        const present = this.dynamicPlugins?.rows.some(
+            (candidate) => candidate.agentId === sessionId && candidate.pluginId === pluginId,
+        );
+        if (!present) throw new Error(t("Dynamic plugin state is out of date. Refresh and try again."));
+        const result = await this.runtime.removeDynamicPlugin(sessionId, pluginId);
+        if (!result.ok) throw new Error(result.message);
+        await this.refreshDynamicPlugins();
+    }
+
+    private async declineDynamicPlugin(pluginId: string, requestId: string): Promise<void> {
+        const row = this.dynamicPlugins?.rows.find((candidate) => candidate.pluginId === pluginId);
+        const latest = row?.latestRun;
+        if (!latest || latest.status !== "awaiting-approval" || latest.approvalRequestId !== requestId) {
+            throw new Error(t("Dynamic plugin approval is out of date. Refresh and try again."));
+        }
+        const result = await this.runtime.declineDynamicPlugin(requestId, latest.pluginRunId);
+        if (!result.accepted) throw new Error(t("The dynamic plugin approval was already resolved."));
+        await this.refreshDynamicPlugins();
+    }
+
     private async mutateSettings(
         namespaceId: string,
         revision: number,
@@ -1061,6 +1133,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     break;
                 case "refreshPluginInventory":
                     await this.refreshPluginInventory();
+                    break;
+                case "refreshDynamicPlugins":
+                    await this.refreshDynamicPlugins();
+                    break;
+                case "stopDynamicPlugin":
+                    await this.stopDynamicPlugin(message.sessionId, message.pluginId);
+                    break;
+                case "removeDynamicPlugin":
+                    await this.removeDynamicPlugin(message.sessionId, message.pluginId);
+                    break;
+                case "declineDynamicPlugin":
+                    await this.declineDynamicPlugin(message.pluginId, message.requestId);
                     break;
                 case "openSettingsDocument":
                     await this.openBrowser();
@@ -3519,6 +3603,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             context: this.contextStore.snapshot(),
             fileReferenceCandidates: this.fileReferenceCandidates,
             ...(this.settingsPanel === undefined ? {} : { settings: this.settingsPanel }),
+            ...(this.dynamicPlugins === undefined ? {} : { dynamicPlugins: this.dynamicPlugins }),
             selection: this.contextStore.getCurrentSelectionMetadata(),
             selectionEnabled: this.selectionEnabled,
             status: this.runtime.getStatus(),

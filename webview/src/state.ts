@@ -49,6 +49,7 @@ export type ActivityDockState = Pick<
     | "todos"
     | "schedule"
     | "permissions"
+    | "dynamicPlugins"
     | "commands"
     | "sessionId"
     | "agentPresetLabel"
