@@ -18,6 +18,7 @@ prompt）。第 8 步的版本发布用 `npm run release` 执行，CHANGELOG
 组合做严格快照校验，设置面板提供全局/会话分组、生命周期相位、搜索和手动刷新；
 仍保持只读，不凭空添加插件管理动作。随后接入 dynamic Cordis Host 面板：
 inventory、停止、移除和拒绝待批准请求，Client half 继续交给 Harness Web UI。
+消息反馈 sidecar 的 Host CAS 骨架也已接回 Webview，支持点赞/点踩、备注和冲突/降级呈现。
 
 下方「契约基线」已按 `dsh-v0.1.2-rc.1` 与当前实现更新；`RPC_new.md` 与
 `RPC_ADAPTATION_PLAN.md` 仍保留为迁移审计和版本升级门禁。下次升级先按其 §14
@@ -88,7 +89,7 @@ projection 集合由当前 Loader composition 决定，不再用旧版固定总�
 
 ## P1：功能（按性价比排序，均已核对公开契约）
 
-- [ ] **消息反馈 UI/评测闭环**。上游 `messageFeedback.list/put/delete` 已有公开 `@Remote`（`deepseek-harness/packages/feedback/message-feedback/src/index.ts:189,205,271`）；`src/dshRuntime.ts`、`src/messageFeedback.ts` 与 `ChatViewProvider` 已保留 RPC、响应校验及 CAS 操作骨架，但消息入口和反馈状态呈现暂未接回 Webview。待评测、统计或导出闭环明确后再开放；反馈不写入 Session 日志、模型上下文或 telemetry。
+- [x] **消息反馈 UI/评测闭环（基础）**。上游 `messageFeedback.list/put/delete` 已有公开 `@Remote`（`deepseek-harness/packages/feedback/message-feedback/src/index.ts:189,205,271`）；现已接回 Webview 消息行，支持点赞/点踩、备注编辑、会话切换加载、逐消息错误和 CAS 冲突后的权威状态回填。反馈仍不写入 Session 日志、模型上下文或 telemetry；统计/导出仍待产品评测口径明确。
 - [ ] **上下文用量与超限反馈补全**：发送前展示附件大小、截断与敏感文件风险，支持移除大项并说明最终进入 prompt 的内容。（基础用量与 `contextBreakdown` 占用归因已完成，仍缺发送前风险/移除大项/最终 prompt 说明。）
 - [ ] **扩展 `@` 引用类型**：当前已有文件、目录、`@selection`、`@terminal`，以及 Runtime 侧 `fileReferences/list`、`sessionReferenceResolver/candidates` 候选；仍需 diagnostics、实际捕获范围展示，并补齐远程工作区实机验证。
 - [ ] **项目记忆入口**：优先复用 Harness 公开 Memory/Skill 能力；无公开协议时只提供打开明确文件的 IDE 操作，不自动把自建记忆拼入所有 prompt。

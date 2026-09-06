@@ -29,6 +29,7 @@ export function App(): React.JSX.Element {
                 messages={state.messages}
                 submitting={state.submitting}
                 agentStatusLabel={state.agentStatusLabel}
+                messageFeedback={state.messageFeedback}
             />
             {!state.focusMode ? <Interactions interactions={state.interactions} /> : null}
             {!state.focusMode ? (
