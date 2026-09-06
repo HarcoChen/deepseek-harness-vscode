@@ -72,6 +72,7 @@ import {
     normalizeFileReferenceCandidates,
     normalizeSessionReferenceCandidates,
 } from "./referenceCandidates";
+import { normalizeModelSelectionProjection } from "./modelSelection";
 
 type RuntimeListener = (status: RuntimeStatus) => void;
 type HarnessConnectedListener = () => void;
@@ -1502,12 +1503,10 @@ export class DshRuntime implements vscode.Disposable {
             groups: DshSessionModelsResult["groups"];
             failures: DshSessionModelsResult["failures"];
         }>("session/modelCatalog", {});
-        const selected = this.harnessState.sessions.get(sessionId)?.projections
-            .find((cell) => cell.key === "modelSelection")?.value;
-        const selection = selected && typeof selected === "object" && selected !== null
-            ? ((selected as { next?: typeof catalog.default; lastUsed?: typeof catalog.default }).next ??
-                (selected as { lastUsed?: typeof catalog.default }).lastUsed)
-            : undefined;
+        const selection = normalizeModelSelectionProjection(
+            this.harnessState.sessions.get(sessionId)?.projections
+                .find((cell) => cell.key === "modelSelection")?.value,
+        );
         const current = selection ?? catalog.default;
         return {
             current,

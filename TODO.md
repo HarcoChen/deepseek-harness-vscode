@@ -14,9 +14,9 @@ baseline、workspace 生命周期、能力端点、错误路径）全绿；**UI 
 prompt）。第 8 步的版本发布用 `npm run release` 执行，CHANGELOG
 [Unreleased] 已备好。
 
-下方「契约基线」一节仍是 `0.1.1-rc.2` 时代的数字；本轮 rc.1 的 endpoint
-审计在 `RPC_new.md` 与 `RPC_ADAPTATION_PLAN.md`，下次升级按其 §14 门禁先做
-tag diff 再动 pin。
+下方「契约基线」已按 `dsh-v0.1.2-rc.1` 与当前实现更新；`RPC_new.md` 与
+`RPC_ADAPTATION_PLAN.md` 仍保留为迁移审计和版本升级门禁。下次升级先按其 §14
+做 tag diff，再调整 runtime pin。
 
 ## 本轮进展（2026-08-26）
 
@@ -45,14 +45,35 @@ i18n 重复 key），否则都会作为运行时坏包发出——这是它最�
 **需要人工验证**：Trace 面板无测试覆盖，迁移后的行为我无法目视确认，
 验证清单写在「重构 → 结构」该条目里。
 
-## 契约基线（历史快照：2026-08-26）
+## 契约基线（当前快照：2026-09-06，目标 `dsh-v0.1.2-rc.1`）
 
-上游 checkout 当时已更新至 `0.1.1-rc.2`，与当时的 `dsh.runtimeVersion` 默认 pin 一致。以下数字保留为历史证据；当前默认 pin 是 `0.1.2-rc.1`，以本文件上方的 RC Remote 审计为准。
+当前默认 pin 是 `0.1.2-rc.1`（目标 commit：
+`a66e4702047846cdaa10c66c9d3df3951f5ea70d`）。RC Remote 的 endpoint 和
+projection 集合由当前 Loader composition 决定，不再用旧版固定总数判断兼容性。
 
-- **Unary RPC**（`POST /api/<method>`，点号形式）：上游 52 条（`deepseek-harness/packages/host/apiproxy/src/fetch/handler.ts:90-143`），扩展消费 45 条（`src/harnessProtocol.ts:36-179`），无悬空引用。
-- **Session projection**：上游注册 13 个，注册插件在 `bundle/base` 与 `bundle/web-app` 均已挂载，默认安装下都是活的；扩展消费 8 个（`goal`、`todos`、`tokenUsage`、`contextPressure`、`title`、`sessionStats`、`permissions`、`imageLimits`）。
-  `GenericProjectionStore`（`src/sessionStore.ts:234-265`）按任意字符串 key 存储，**未消费的 projection 其实已经到达并缓存**，`src/tracePanel.ts:854` 已泛化渲染其原始值。因此接入新 projection 是纯呈现层工作，不动传输、不改运行时组合。
-- **Typert Gateway / RC Remote**（斜杠形式，与 unary 共用 `/api` 基址）：`commands/list` 与 `commands/execute` 已由 `src/dshRuntime.ts` 消费；`messageFeedback/list|put|delete` 已有 RPC、响应校验与 CAS 状态操作，但前端入口仍隐藏。Composer 已消费 `fileReferences/list` 与 `sessionReferenceResolver/candidates`，并在 Remote 404/旧 Runtime 时回退本地候选；仍未消费 `pluginInventory/list`。RC1 的调用封装已集中在 `src/remote/unaryClient.ts`，不要再按已删除的 `src/harnessClient.ts` 估算接入成本。
+- **RC Remote unary**：统一走 `POST /api/<namespace>/<method>`，请求为
+  `payload: {args: ...}`，由 `src/remote/unaryClient.ts` 严格校验 envelope、
+  endpoint、rpcId、响应和 namespaced error。`DshRuntime` 当前消费 session、
+  workspace、subagents、goals、agentPresets、skills、commands、settings、
+  credentials、llm、directoryPicker、fileReferences、
+  sessionReferenceResolver 与 messageFeedback 等已挂载能力；生产代码不再
+  依赖旧点号 endpoint map。
+- **RC Remote streams**：`/api/remote.mux` 由 `RemoteMuxClient` 承载 `$events`、
+  `workspace/follow`、`session/control` 和按需 `session/follow`；
+  `RemoteStateCoordinator` 以 generation baseline、cursor 和高 seq projection
+  合并重连状态。旧的双 WebSocket、`server-request`、`/api/respond` 已移除。
+- **Session projection**：projection cell 以任意字符串 key + seq 进入
+  `GenericProjectionStore`，未消费的 key 仍会到达并缓存。当前 UI 消费
+  `goal`、`todos`、`tokenUsage`、`contextPressure`、`contextBreakdown`、
+  `title`、`sessionStats`、`permissions`、`imageLimits`、`plan`、
+  `subagentTiming` 与 `modelSelection`；其中 `modelSelection` 已按 projection
+  变化实时更新模型/推理强度状态，`turnOutline`、`schedule` 等仍是下方待消费项。
+- **Typert Gateway capability**：`commands/list|execute`、
+  `fileReferences/list`、`sessionReferenceResolver/candidates` 已由 UI/Runtime
+  消费；文件与会话引用在 404/旧 Runtime 时回退本地候选。`messageFeedback` 仍
+  只有 RPC、响应校验和 CAS 骨架，前端入口待评测闭环；`pluginInventory/list`
+  尚未消费。所有 RC1 调用均经 `src/remote/`，不要再按已删除的
+  `src/harnessClient.ts`、`src/harnessProtocol.ts` 估算接入成本。
 
 ## P0：BUG修复
 
@@ -70,9 +91,9 @@ i18n 重复 key），否则都会作为运行时坏包发出——这是它最�
 适配完成后（上一节），RC Remote 的消费面盘点：18 个下行事件已消费 12 个
 （catalog 6 个 + approval/question waterfall 2 个 + chatView 失效刷新 4 个，
 未消费的 6 个 `cordis/*` 见下）；已注册 session
-projection 已消费 10 个业务面（goal、todos、tokenUsage、contextPressure、title、
-sessionStats、permissions、imageLimits、plan、subagentTiming），其中 `tokenUsage`
-已额外读取 `contextBreakdown`；且
+projection 已消费 12 个 key（goal、todos、tokenUsage、contextPressure、
+contextBreakdown、title、sessionStats、permissions、imageLimits、plan、
+subagentTiming、modelSelection）；且
 `GenericProjectionStore` 本就缓存全部 projection —— 以下多数条目是**纯呈现层
 工作**，不动传输。按性价比排序：
 
@@ -84,9 +105,6 @@ sessionStats、permissions、imageLimits、plan、subagentTiming），其中 `to
 - [ ] **定时提醒只读面板（`schedule`）**：active reminders `{prompt, afterSeconds|everySeconds, scheduledAt}`
       （`dsh-v0.1.2-rc.1:packages/schedule/schedule/src/projection.ts:70`）。创建只在
       agent 侧 tools（`schedule/src/tools.ts`），IDE 只读展示 + 失效重拉，不做伪造创建入口。
-- [ ] **会话模型选择实时投影（`modelSelection`）**（`dsh-v0.1.2-rc.1:packages/api/session-controller/src/model-selection-projection.ts:59`）：
-      `DshRuntime.models()` 已在拉取 catalog 时读取该 projection；但 ChatView 尚未在 projection
-      变化时主动刷新 `selectedModels`，所以模型被别处（Web UI、agent）切换时状态条还不能保证即时跟上。
 - [ ] **插件库存只读视图（`pluginInventory`）**：`pluginInventory/list` → `{entries: [{entryId, moduleName, enabled, fiberPhase}], agentPresets: [{id, trust, name, isDefault, rows: [{moduleName, enabled, fiberPhase, condition}]}]}`
       （`dsh-v0.1.2-rc.1:packages/host/plugin-inventory/src/index.ts:65`、`types.ts`）。
       Loader 条目与每个 preset 的插件组合 + Fiber 生命周期相位（`failed` 可见）。

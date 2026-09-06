@@ -112,6 +112,7 @@ import {
 import { projectTokenUsage, SelectedModelSnapshot } from "./tokenUsage";
 import { openWorkspaceFileLocation } from "./workspaceNavigation";
 import { errorMessage } from "./errors";
+import { normalizeModelSelectionProjection, sameModelSelection } from "./modelSelection";
 import {
     normalizeMessageFeedbackDeleteResult,
     normalizeMessageFeedbackListResult,
@@ -359,6 +360,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private readonly modelCatalogRequests = new Map<string, Promise<void>>();
     private readonly modelCatalogGenerations = new Map<string, number>();
     private readonly modelCatalogRefreshPending = new Set<string>();
+    private readonly modelSelectionProjectionSeqs = new Map<string, number>();
     private readonly skillCatalogs = new Map<string, DshSkillEntry[]>();
     private readonly skillCatalogRequests = new Map<string, Promise<void>>();
     private readonly commandCatalogs = new Map<string, DshCommandDescriptor[]>();
@@ -414,6 +416,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             }
             const subagentTimingChanged = this.observeSubagentTiming(sessionId, snapshot);
             if (sessionId === this.sessionId) {
+                this.observeModelSelection(sessionId, snapshot);
                 this.goalMutations.observe(
                     sessionId,
                     projectionCell(snapshot, "goal"),
@@ -2971,6 +2974,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     }
 
+    /**
+     * Keep the visible model route aligned with the authoritative RC
+     * modelSelection projection.  A model can be changed by another client or
+     * by an agent, so waiting for the next local selectModel action leaves the
+     * status bar and reasoning-effort control stale.
+     */
+    private observeModelSelection(
+        sessionId: string,
+        snapshot: SessionStateSnapshot,
+    ): void {
+        const cell = projectionCell(snapshot, "modelSelection");
+        if (!cell || this.modelSelectionProjectionSeqs.get(sessionId) === cell.seq) return;
+        this.modelSelectionProjectionSeqs.set(sessionId, cell.seq);
+
+        const selection = normalizeModelSelectionProjection(cell.value);
+        if (!selection) return;
+
+        const catalog = this.modelCatalogs.get(sessionId);
+        const reasoningEfforts = catalog
+            ? reasoningEffortOptions(catalog, selection.provider, selection.model)
+            : undefined;
+        const previous = this.selectedModels.get(sessionId);
+        this.selectedModels.set(sessionId, {
+            selection,
+            asOfSeq: cell.seq,
+            ...(reasoningEfforts === undefined ? {} : { reasoningEfforts }),
+        });
+        if (catalog && !sameModelSelection(catalog.current, selection)) {
+            this.modelCatalogs.set(sessionId, { ...catalog, current: selection });
+        }
+        if (!previous ||
+            !sameModelSelection(previous.selection, selection) ||
+            previous.asOfSeq !== cell.seq ||
+            (reasoningEfforts !== undefined &&
+                JSON.stringify(previous.reasoningEfforts ?? []) !== JSON.stringify(reasoningEfforts))) {
+            if (this.sessionId === sessionId) this.schedulePostState();
+        }
+    }
+
     private invalidateModelCatalogs(): void {
         this.modelCatalogs.clear();
         for (const sessionId of this.modelCatalogRequests.keys()) {
@@ -2990,19 +3032,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         const request = this.runtime.models(sessionId)
             .then((catalog) => {
                 if (this.modelCatalogGenerations.get(sessionId) !== generation) return;
-                this.modelCatalogs.set(sessionId, catalog);
-                const efforts = reasoningEffortOptions(
-                    catalog,
-                    catalog.current.provider,
-                    catalog.current.model,
-                );
                 const selected = this.selectedModels.get(sessionId);
-                if (!selected ||
-                    (selected.selection.provider === catalog.current.provider &&
-                        selected.selection.model === catalog.current.model)) {
+                const projectionSelection = this.modelSelectionProjectionSeqs.has(sessionId)
+                    ? selected?.selection
+                    : undefined;
+                const current = projectionSelection ?? catalog.current;
+                const effectiveCatalog = sameModelSelection(current, catalog.current)
+                    ? catalog
+                    : { ...catalog, current };
+                this.modelCatalogs.set(sessionId, effectiveCatalog);
+                const efforts = reasoningEffortOptions(
+                    effectiveCatalog,
+                    current.provider,
+                    current.model,
+                );
+                if (!selected) {
                     this.selectedModels.set(sessionId, {
-                        selection: catalog.current,
+                        selection: current,
                         asOfSeq: highestKnownSeq(this.runtime.getSessionStore().get(sessionId)),
+                        reasoningEfforts: efforts,
+                    });
+                } else if (!sameModelSelection(selected.selection, current) ||
+                    JSON.stringify(selected.reasoningEfforts ?? []) !== JSON.stringify(efforts)) {
+                    this.selectedModels.set(sessionId, {
+                        ...selected,
+                        selection: current,
                         reasoningEfforts: efforts,
                     });
                 }
