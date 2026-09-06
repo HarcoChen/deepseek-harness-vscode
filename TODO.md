@@ -39,8 +39,13 @@ Subagent 编排随后也已迁出：树刷新/历史预览/跟进/中断与 6 �
 `src/subagentController.ts`（425 行），按 `ProviderManagementDeps` 先例注入
 `runtime` + `currentRootSession()` + `onChange()` 三个依赖，ChatViewProvider 仅在
 构造器订阅、handleMessage 五个 case、postState/loadImage 读取、dispose 处接线；
-迁出代码经机械替换归一后与原实现逐行等价（仅类内方法顺序不同）。重构余项
-只剩 `handleMessage` switch 拆分。
+迁出代码经机械替换归一后与原实现逐行等价（仅类内方法顺序不同）。messageFeedback
+的状态与 CAS 骨架（4 字段 + 接口 + 2 个模块级 helper + 12 个方法）同法迁入
+`src/messageFeedbackController.ts`（395 行，含保留未接线的 `messageFeedbackView`/
+`decorateMessageFeedback`）。chatView.ts 3975 → 3175 行；重构余项：
+`handleMessage` switch 拆处理器表（结构收益为主，行数基本持平），以及
+settings/动态插件域（约 250 行）与 `updateFileReferenceCandidates`（约 200 行，
+vscode 依赖较重）两个可选迁出。
 
 ## 本轮进展（2026-08-26）
 
@@ -108,7 +113,7 @@ projection 集合由当前 Loader composition 决定，不再用旧版固定总�
 
 ## P1：功能（按性价比排序，均已核对公开契约）
 
-- [ ] **消息反馈 UI/评测闭环**。上游 `messageFeedback.list/put/delete` 已有公开 `@Remote`（`deepseek-harness/packages/feedback/message-feedback/src/index.ts:189,205,271`）；`src/dshRuntime.ts`、`src/messageFeedback.ts` 与 `ChatViewProvider` 已保留 RPC、响应校验及 CAS 操作骨架，但消息入口和反馈状态呈现暂未接回 Webview。待评测、统计或导出闭环明确后再开放；反馈不写入 Session 日志、模型上下文或 telemetry。
+- [ ] **消息反馈 UI/评测闭环**。上游 `messageFeedback.list/put/delete` 已有公开 `@Remote`（`deepseek-harness/packages/feedback/message-feedback/src/index.ts:189,205,271`）；状态与 CAS 骨架已整体迁至 `src/messageFeedbackController.ts`（ChatViewProvider 仅转发两个 webview case），消息入口和反馈状态呈现仍未接回 Webview——`messageFeedbackView`/`decorateMessageFeedback` 保留在控制器中待接线。待评测、统计或导出闭环明确后再开放；反馈不写入 Session 日志、模型上下文或 telemetry。
 - [ ] **上下文用量与超限反馈补全**：发送前展示附件大小、截断与最终进入 prompt 的内容，支持移除大项。（基础用量与 `contextBreakdown` 占用归因已完成；不自动识别或分类秘密、个人信息等敏感内容，除非另有隐私策略和明确同意。）
 - [ ] **扩展 `@` 引用类型**：当前已有文件、目录、`@selection`、`@terminal`，以及 Runtime 侧 `fileReferences/list`、`sessionReferenceResolver/candidates` 候选；仍需 diagnostics、实际捕获范围展示，并补齐远程工作区实机验证。
 - [ ] **项目规则与 Prompt 模板（其他 DSH 扩展对照后的可做项）**：提供本地 Markdown 规则/提示模板的只读发现和显式选择，作为可见上下文附件或预填文本；没有公开 Memory 协议时不自动注入或生成隐式记忆。
