@@ -96,6 +96,8 @@ const DEFAULT_PACKAGE_MANAGER_FETCH_TIMEOUT_MS = 30_000;
 const DEFAULT_NPM_REGISTRY = "https://registry.npmmirror.com";
 const OFFICIAL_NPM_REGISTRY = "https://registry.npmjs.org";
 const NPM_REGISTRY_QUERY_TIMEOUT_MS = 5_000;
+/** Bounded recovery delays for a Runtime launched by this extension. */
+const RUNTIME_RECOVERY_DELAYS_MS = [1_000, 5_000, 15_000] as const;
 type PackageManager = "npx" | "pnpm";
 /**
  * The start lock every dsh editor integration shares, so one Runtime serves the
@@ -982,6 +984,10 @@ export class DshRuntime implements vscode.Disposable {
     private disposed = false;
     private status: RuntimeStatus = { state: "stopped" };
     private hostDescription: HarnessHostDescription | undefined;
+    private runtimeRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
+    private runtimeRecoveryAttempts = 0;
+    private runtimeRecoveryGeneration = 0;
+    private runtimeRecoveryInFlight = false;
 
     public constructor(
         private readonly output: vscode.OutputChannel,
@@ -1181,6 +1187,7 @@ export class DshRuntime implements vscode.Disposable {
             `Runtime status: ${this.status.state}`,
             `Runtime URL: ${this.baseUrl ? redactUrl(this.baseUrl) : "<none>"}`,
             `Runtime health: ${health}`,
+            `Runtime recovery attempts: ${this.runtimeRecoveryAttempts}/${RUNTIME_RECOVERY_DELAYS_MS.length}; pending: ${this.runtimeRecoveryTimer !== undefined || this.runtimeRecoveryInFlight ? "yes" : "no"}`,
             `Remote RPC probe: ${rpcHealth}`,
             `Remote protocol: RC Remote v1 (generation ${this.remoteConnection.currentGeneration || "<none>"})`,
             `Configured Runtime version: ${runtimeVersion}`,
@@ -1209,9 +1216,20 @@ export class DshRuntime implements vscode.Disposable {
     }
 
     public async start(workspaceRoot?: string): Promise<string> {
+        return this.startWithRecovery(workspaceRoot, false);
+    }
+
+    /**
+     * Start the Runtime, optionally preserving the recovery budget for an
+     * automatic retry. A user-triggered start cancels a pending retry so it
+     * cannot race the explicit action.
+     */
+    private async startWithRecovery(workspaceRoot: string | undefined, fromRecovery: boolean): Promise<string> {
         if (this.disposed) {
             throw new Error(t("The dsh-ide runtime has already been disposed."));
         }
+
+        if (!fromRecovery) this.cancelRuntimeRecovery();
 
         if (this.startPromise) {
             return this.startPromise;
@@ -1231,6 +1249,7 @@ export class DshRuntime implements vscode.Disposable {
     }
 
     public async stop(): Promise<void> {
+        this.cancelRuntimeRecovery();
         await this.harnessState.stop();
         this.subagentHistoryCursors.clear();
         const child = this.child;
@@ -2282,11 +2301,20 @@ export class DshRuntime implements vscode.Disposable {
                 launchError = error;
                 exited = true;
             });
+            let ready = false;
             child.once("close", (code, signal) => {
                 exited = true;
                 this.output.appendLine(`[dsh] exited: code=${code ?? "null"}, signal=${signal ?? "null"}`);
+                const shouldRecover = ready &&
+                    this.child === child &&
+                    this.startedByExtension &&
+                    !this.disposed;
+                const recoveryGeneration = this.runtimeRecoveryGeneration;
                 if (this.child === child) {
                     this.child = undefined;
+                }
+                if (shouldRecover) {
+                    void this.handleUnexpectedRuntimeExit(workspaceRoot, code, signal, recoveryGeneration);
                 }
             });
 
@@ -2308,6 +2336,7 @@ export class DshRuntime implements vscode.Disposable {
                     () => launchError,
                     () => outputTail,
                 );
+                ready = true;
                 this.baseUrl = url;
                 try {
                     await this.publishRuntimeLockUrl({
@@ -2735,6 +2764,125 @@ export class DshRuntime implements vscode.Disposable {
         } finally {
             await unlink(lock.path).catch(() => undefined);
         }
+    }
+
+    /** Cancel automatic recovery when an explicit lifecycle action takes over. */
+    private cancelRuntimeRecovery(): void {
+        ++this.runtimeRecoveryGeneration;
+        if (this.runtimeRecoveryTimer !== undefined) {
+            clearTimeout(this.runtimeRecoveryTimer);
+            this.runtimeRecoveryTimer = undefined;
+        }
+        this.runtimeRecoveryInFlight = false;
+        this.runtimeRecoveryAttempts = 0;
+    }
+
+    /**
+     * Recover only an extension-owned child. The process lock is released
+     * before retrying, allowing another window to publish a healthy endpoint
+     * that this window can reuse instead of spawning a second Runtime.
+     */
+    private async handleUnexpectedRuntimeExit(
+        workspaceRoot: string | undefined,
+        code: number | null,
+        signal: NodeJS.Signals | null,
+        recoveryGeneration: number,
+    ): Promise<void> {
+        if (
+            this.disposed ||
+            this.runtimeRecoveryGeneration !== recoveryGeneration ||
+            !this.startedByExtension ||
+            this.child !== undefined
+        ) return;
+
+        this.output.appendLine(
+            `[dsh] extension-owned Runtime exited unexpectedly: code=${code ?? "null"}, signal=${signal ?? "null"}`,
+        );
+        this.baseUrl = undefined;
+        this.launchUrl = undefined;
+        this.authCookie = undefined;
+        this.authPromise = undefined;
+        this.hostDescription = undefined;
+        this.subagentHistoryCursors.clear();
+
+        try {
+            await this.harnessState.stop();
+        } catch (error) {
+            this.output.appendLine(`[dsh] failed to stop Remote state after Runtime exit: ${String(error)}`);
+        }
+
+        // A manual start/stop may have won while the Remote streams were
+        // shutting down. Never release its lock or change its ownership.
+        if (
+            this.disposed ||
+            this.runtimeRecoveryGeneration !== recoveryGeneration ||
+            this.child !== undefined ||
+            !this.startedByExtension
+        ) return;
+        await this.releaseRuntimeLock();
+        this.startedByExtension = false;
+        // A retry attempt may have been starting when this new child died.
+        // Let the exit schedule the next attempt; the old start promise will
+        // observe the generation change and cannot reset the budget.
+        this.runtimeRecoveryInFlight = false;
+        this.scheduleRuntimeRecovery(workspaceRoot);
+    }
+
+    /** Schedule one bounded, generation-guarded recovery attempt. */
+    private scheduleRuntimeRecovery(workspaceRoot: string | undefined): void {
+        if (this.disposed || this.runtimeRecoveryTimer !== undefined || this.runtimeRecoveryInFlight) return;
+        if (!workspaceRoot) {
+            const message = t("dsh web exited unexpectedly, but no workspace is available for recovery.");
+            this.setStatus({ state: "error", message });
+            return;
+        }
+
+        const maxAttempts = RUNTIME_RECOVERY_DELAYS_MS.length;
+        if (this.runtimeRecoveryAttempts >= maxAttempts) {
+            const message = t("dsh web exited unexpectedly after {attempts} recovery attempts. Run DSH: Restart dsh Web to try again.", {
+                attempts: maxAttempts,
+            });
+            this.setStatus({ state: "error", message });
+            this.output.appendLine(`[dsh] Runtime recovery exhausted after ${maxAttempts} attempts`);
+            return;
+        }
+
+        const attempt = ++this.runtimeRecoveryAttempts;
+        const delayMs = RUNTIME_RECOVERY_DELAYS_MS[attempt - 1];
+        const generation = ++this.runtimeRecoveryGeneration;
+        const seconds = Math.ceil(delayMs / 1_000);
+        this.output.appendLine(
+            `[dsh] scheduling Runtime recovery attempt ${attempt}/${maxAttempts} in ${seconds}s`,
+        );
+        this.setStatus({
+            state: "starting",
+            message: t("dsh web exited unexpectedly; retrying in {seconds}s (attempt {attempt} of {max}).", {
+                seconds,
+                attempt,
+                max: maxAttempts,
+            }),
+        });
+
+        this.runtimeRecoveryTimer = setTimeout(() => {
+            if (this.runtimeRecoveryGeneration !== generation || this.disposed) return;
+            this.runtimeRecoveryTimer = undefined;
+            this.runtimeRecoveryInFlight = true;
+            void this.startWithRecovery(workspaceRoot, true)
+                .then(() => {
+                    if (this.runtimeRecoveryGeneration === generation && this.status.state === "running") {
+                        this.runtimeRecoveryAttempts = 0;
+                    }
+                })
+                .catch((error: unknown) => {
+                    if (this.runtimeRecoveryGeneration !== generation || this.disposed) return;
+                    this.output.appendLine(`[dsh] Runtime recovery attempt ${attempt} failed: ${String(error)}`);
+                    this.runtimeRecoveryInFlight = false;
+                    this.scheduleRuntimeRecovery(workspaceRoot);
+                })
+                .finally(() => {
+                    if (this.runtimeRecoveryGeneration === generation) this.runtimeRecoveryInFlight = false;
+                });
+        }, delayMs);
     }
 
     private async terminate(child: ChildProcess): Promise<void> {

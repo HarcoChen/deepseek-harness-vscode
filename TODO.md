@@ -21,6 +21,10 @@ inventory、停止、移除和拒绝待批准请求，Client half 继续交给 H
 文件位置跳转在本地边界检查失败且 Host 宣布 `canOpenPath` 时回落到
 `session/openWorkspacePath`，为远程工作区保留公开协议路径。
 
+本轮进一步核对了多根语义：DSH 的 Session/DirectoryPicker 契约均是单 `cwd`，
+因此 VS Code multi-root 不作为一个 DSH Session 支持；同时为扩展启动的 Runtime
+补上了异常退出后的 1s/5s/15s 有界退避恢复，外部 Runtime 仍只复用、不接管。
+
 下方「契约基线」已按 `dsh-v0.1.2-rc.1` 与当前实现更新；`RPC_new.md` 与
 `RPC_ADAPTATION_PLAN.md` 仍保留为迁移审计和版本升级门禁。下次升级先按其 §14
 做 tag diff，再调整 runtime pin。
@@ -76,6 +80,7 @@ projection 集合由当前 Loader composition 决定，不再用旧版固定总�
   `subagentTiming`、`modelSelection`、`turnOutline` 与 `schedule`；其中
   `modelSelection` 已按 projection 变化实时更新模型/推理强度状态，`turnOutline`
   已驱动对话导航，`schedule` 已接入 Activity Dock 只读面板。
+  Session 元数据只携带单个可选 `cwd`；这不是 VS Code multi-root 的多路径绑定。
 - **Typert Gateway capability**：`commands/list|execute`、
   `fileReferences/list`、`sessionReferenceResolver/candidates` 已由 UI/Runtime
   消费；文件与会话引用在 404/旧 Runtime 时回退本地候选。`messageFeedback` 仍
@@ -139,7 +144,7 @@ subagentTiming、modelSelection、turnOutline、schedule）；且
 
 - [ ] **跨平台 Runtime CI**：在 Windows、macOS、Linux 验证命令发现、启动、动态端口、健康检查、停止和进程树清理。
 - [ ] **GUI 启动 PATH 发现**：覆盖 macOS Finder/Dock、Linux Desktop 和 Windows npm 全局 bin 路径缺失场景，日志中说明最终使用的可执行文件。
-- [ ] **多根工作区 Runtime 归属**：根据活动编辑器选择 cwd，明确每个 session 对应的 workspace folder，切换时不误停其他窗口复用的 Runtime。
+- [x] **多根工作区 Runtime 归属（契约边界已核对）**：DSH 的一个 Session 只有一个 `cwd`，DirectoryPicker 也只暴露一条 ancestry chain；因此不把 VS Code multi-root workspace 映射成一个 DSH Session。多个根目录应分别建立 DSH Workspace/Session，IDE 当前沿用第一个 VS Code workspace folder，并在文档中明确这一限制（上游证据：`deepseek-harness/packages/host/directory-picker/README.md`、`packages/api/session-controller/src/types.ts`）。
 - [ ] **远程工作区支持评估**：验证 Remote SSH、WSL、Dev Container 下 Extension Host、Runtime 和文件系统是否位于同侧；需要时使用 VS Code 端口转发。
       文件位置点击现已在本地边界检查失败时回落到 `session/openWorkspacePath`；剩余
       `directoryPicker/pick` / `directoryPicker/list` / `directoryPicker/createDirectory` 三条目录选择 RPC
@@ -201,6 +206,7 @@ subagentTiming、modelSelection、turnOutline、schedule）；且
 - ~~**MCP 工具来源**：展示 MCP server、工具来源、连接状态和错误。~~ 本轮复核 `deepseek-harness/packages/mcp` 无 `@Remote`、无 `mcp.*` unary 路由，仍无 server 列表或连接状态契约。
 - ~~**Terminal / PTY context**：终端选区 `@` 引用、PTY 输出摘要和 persistent bash 状态。~~ 本轮复核无 `terminal.*` / `shell.*` unary 路由；VS Code 稳定 API 也不提供终端选区或既有 scrollback 读取。
 - **workspace symbol `@` 候选**：公开协议未提供 workspace symbols 查询。
+- **VS Code multi-root Session**：DSH Workspace 可以有多个独立 Workspace，Session 也可分散在这些 Workspace 中；但公开 Session/DirectoryPicker 契约没有一个 Session 绑定多个根目录的表示。不要为此自建多根协议或误报“已支持”。
 
 ## 明确不照搬
 

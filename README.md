@@ -109,6 +109,8 @@ The bottom bar shows your current balance, including peak and off-peak pricing. 
 
 **Can I connect to an existing Runtime?** Yes. Set `dsh.serverUrl` to your running `dsh web` address. The extension supports the RC Remote RPC introduced in `dsh 0.1.2-rc.1`; the default managed Runtime is `0.1.2-rc.1`.
 
+**Does DSH support multi-root workspaces?** DSH supports multiple independent Workspaces, but each Session has one working directory (`cwd`). A VS Code multi-root workspace is therefore represented by the first workspace folder for Runtime startup; use separate DSH Workspaces or Sessions when roots need different working directories.
+
 **What if startup fails?** Run `DSH: Diagnose Environment`, then `DSH: Show dsh Runtime Logs` from the Command Palette. Include your extension version, OS, and redacted error details when opening an [issue](https://github.com/HarcoChen/deepseek-harness-vscode/issues).
 
 **Does it support Chinese?** Yes. Commands, chat, Activity, and Trace follow VS Code's display language, with English and Simplified Chinese available.
