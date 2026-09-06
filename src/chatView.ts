@@ -86,6 +86,8 @@ import {
     DshMessageFeedbackPutRequest,
     DshMessageFeedbackRating,
     DshMessageFeedbackStateView,
+    DshFileReferenceCandidate,
+    DshSessionReferenceCandidate,
     DshReferenceCandidate,
     DshReasoningEffortOption,
     DshSessionSearchItem,
@@ -115,6 +117,11 @@ import {
     normalizeMessageFeedbackListResult,
     normalizeMessageFeedbackPutResult,
 } from "./messageFeedback";
+import {
+    formatFileReferenceMention,
+    formatSessionReferenceMention,
+    referencePathPresentation,
+} from "./referenceCandidates";
 
 interface PersistedSession {
     sessionId: string;
@@ -338,6 +345,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private focusMode = false;
     private fileReferenceCandidates: DshReferenceCandidate[] = [];
     private fileReferenceQueryGeneration = 0;
+    private fileReferenceQueryAbort: AbortController | undefined;
     private pendingComposerUpdate: { type: "insertText" | "setText"; text: string } | undefined;
     private readonly pendingComposerImages: DshImageUpload[] = [];
     private webviewReady = false;
@@ -901,6 +909,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         if (this.subagentRefreshTimer) clearTimeout(this.subagentRefreshTimer);
         for (const controller of this.subagentTreeAborts.values()) controller.abort();
         this.subagentPreviewAbort?.abort();
+        this.fileReferenceQueryAbort?.abort();
         this.changeReviews.dispose();
         this.toolDiffs.dispose();
         for (const disposable of this.disposables) {
@@ -969,7 +978,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     await this.loadImage(message.attachmentId);
                     break;
                 case "fileReferenceQuery":
-                    await this.updateFileReferenceCandidates(message.query);
+                    await this.updateFileReferenceCandidates(message.query, message.quoted === true);
                     break;
                 case "toggleSelection":
                     this.selectionEnabled = !this.selectionEnabled;
@@ -1144,76 +1153,170 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         }
     }
 
-    private async updateFileReferenceCandidates(query: string): Promise<void> {
+    private async updateFileReferenceCandidates(query: string, preserveQuote = false): Promise<void> {
         const generation = ++this.fileReferenceQueryGeneration;
+        this.fileReferenceQueryAbort?.abort();
+        const controller = new AbortController();
+        this.fileReferenceQueryAbort = controller;
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         const normalizedQuery = query.trim().replaceAll("\\", "/").toLowerCase();
         const filesPromise = workspaceFolder
-            ? Promise.resolve(vscode.workspace.findFiles("**/*", "**/{.git,node_modules,.DS_Store}/**", 2_000)).catch(() => [] as vscode.Uri[])
+            ? Promise.resolve(vscode.workspace.findFiles("**/*", "**/{.git,node_modules,.DS_Store}/**", 2_000))
+                .catch(() => [] as vscode.Uri[])
             : Promise.resolve([] as vscode.Uri[]);
-        const searchPromise: Promise<DshSessionSearchItem[]> = normalizedQuery && this.runtime.getUrl()
-            ? this.runtime.searchSessions(query.trim()).then((result) => result.items).catch(() => [])
-            : Promise.resolve([]);
-        const [uris, searchItems] = await Promise.all([filesPromise, searchPromise]);
-        if (generation !== this.fileReferenceQueryGeneration) return;
-        const terminalCandidates = this.terminalContext.referenceCandidates(query);
-        const active = vscode.window.activeTextEditor?.document.uri;
-        const fileCandidates = uris
-            .map((uri) => vscode.workspace.asRelativePath(uri, false).replaceAll("\\", "/"))
-            .filter((relative) => !normalizedQuery || relative.toLowerCase().includes(normalizedQuery))
-            .map((relative): DshReferenceCandidate => ({
-                kind: "file",
-                label: relative,
-                insertText: `@${relative}`,
-            }));
-        const activeRelative = active
-            ? vscode.workspace.asRelativePath(active, false).replaceAll("\\", "/")
-            : undefined;
-        const orderedFiles = activeRelative && (!normalizedQuery || activeRelative.toLowerCase().includes(normalizedQuery))
-            ? [
-                  { kind: "file", label: activeRelative, insertText: `@${activeRelative}` } satisfies DshReferenceCandidate,
-                  ...fileCandidates.filter((candidate) => candidate.label !== activeRelative),
-              ]
-            : fileCandidates;
-
-        const remoteById = new Map(searchItems.map((item) => [item.sessionId, item]));
-        const sessionById = new Map<string, { sessionId: string; title?: string; cwd?: string; blank?: boolean }>();
-        for (const session of this.runtime.getSessionCatalog().snapshot().sessions) {
-            sessionById.set(session.sessionId, session);
-        }
-        for (const item of searchItems) {
-            if (!sessionById.has(item.sessionId)) sessionById.set(item.sessionId, { sessionId: item.sessionId });
-        }
-        const sessionCandidates = [...sessionById.values()]
-            .filter((session) => session.blank !== true && session.sessionId !== this.sessionId)
-            .filter((session) => {
-                if (!normalizedQuery) return true;
-                const remote = remoteById.get(session.sessionId);
-                const searchable = [session.sessionId, session.title, session.cwd, remote?.snippet]
-                    .filter((part): part is string => typeof part === "string")
-                    .join("\\n")
-                    .toLowerCase();
-                return searchable.includes(normalizedQuery);
-            })
-            .map((session): DshReferenceCandidate => {
-                const label = session.title?.trim() || session.sessionId;
-                const escapedLabel = label.replace(/[\x5c\]]/gu, (match) => `\x5c${match}`);
-                const payload = Buffer.from(JSON.stringify(session.sessionId), "utf8").toString("base64url");
-                const remote = remoteById.get(session.sessionId);
-                const description = [
-                    session.sessionId,
-                    session.cwd,
-                    remote?.snippet,
-                ].filter((part): part is string => typeof part === "string" && part.length > 0).join(" · ");
-                return {
-                    kind: "session",
-                    label,
-                    insertText: `@[${escapedLabel}](dsh-session:${payload})`,
-                    ...(description ? { description } : {}),
-                };
+        const remoteSessionId = this.sessionId;
+        const remoteEnabled = remoteSessionId !== undefined && this.runtime.getUrl() !== undefined;
+        const optionalRemote = <T>(endpoint: string, request: Promise<T>): Promise<T | undefined> =>
+            request.catch((error) => {
+                if (!controller.signal.aborted) {
+                    this.output.appendLine(
+                        "[dsh:rpc] " + endpoint + " candidate lookup failed: " + errorMessage(error),
+                    );
+                }
+                return undefined;
             });
-        this.fileReferenceCandidates = [...terminalCandidates, ...orderedFiles, ...sessionCandidates].slice(0, 40);
-        this.postState();
+        const remoteFilesPromise: Promise<DshFileReferenceCandidate[] | undefined> = remoteEnabled
+            ? optionalRemote(
+                  "fileReferences/list",
+                  this.runtime.listFileReferences(remoteSessionId, query, controller.signal),
+              )
+            : Promise.resolve(undefined);
+        let remoteSessionsPromise: Promise<DshSessionReferenceCandidate[] | undefined>;
+        if (preserveQuote) {
+            remoteSessionsPromise = Promise.resolve([]);
+        } else if (remoteEnabled) {
+            remoteSessionsPromise = optionalRemote(
+                "sessionReferenceResolver/candidates",
+                this.runtime.listSessionReferenceCandidates(remoteSessionId, query, controller.signal),
+            );
+        } else {
+            remoteSessionsPromise = Promise.resolve(undefined);
+        }
+        const searchPromise: Promise<DshSessionSearchItem[]> = !preserveQuote && normalizedQuery && remoteEnabled
+            ? this.runtime.searchSessions(query.trim(), controller.signal).then((result) => result.items).catch((error) => {
+                  if (!controller.signal.aborted) {
+                      this.output.appendLine(
+                          "[dsh:rpc] session/search candidate lookup failed: " + errorMessage(error),
+                      );
+                  }
+                  return [];
+              })
+            : Promise.resolve([]);
+
+        try {
+            const [uris, searchItems, remoteFiles, remoteSessions] = await Promise.all([
+                filesPromise,
+                searchPromise,
+                remoteFilesPromise,
+                remoteSessionsPromise,
+            ]);
+            if (generation !== this.fileReferenceQueryGeneration || controller.signal.aborted) return;
+
+            const terminalCandidates = this.terminalContext.referenceCandidates(query);
+            const active = vscode.window.activeTextEditor?.document.uri;
+            const localFileCandidates = uris
+                .map((uri) => vscode.workspace.asRelativePath(uri, false).replaceAll("\\", "/"))
+                .filter((path) => !normalizedQuery || path.toLowerCase().includes(normalizedQuery))
+                .map((path): DshReferenceCandidate | undefined => {
+                    const candidate: DshFileReferenceCandidate = { kind: "file", path };
+                    const presentation = referencePathPresentation(path, false);
+                    const insertText = formatFileReferenceMention(candidate, preserveQuote);
+                    if (!insertText) return undefined;
+                    return {
+                        kind: "file",
+                        label: presentation.label,
+                        insertText,
+                        ...(presentation.parent === undefined ? {} : { description: presentation.parent }),
+                    };
+                })
+                .filter((candidate): candidate is DshReferenceCandidate => candidate !== undefined);
+            const activeRelative = active
+                ? vscode.workspace.asRelativePath(active, false).replaceAll("\\", "/")
+                : undefined;
+            const activeInsertText = activeRelative === undefined
+                ? undefined
+                : formatFileReferenceMention({ kind: "file", path: activeRelative }, preserveQuote);
+            const activeCandidate = activeRelative
+                ? localFileCandidates.find((candidate) => candidate.insertText === activeInsertText)
+                : undefined;
+            const orderedLocalFiles = activeCandidate
+                ? [
+                      activeCandidate,
+                      ...localFileCandidates.filter((candidate) => candidate !== activeCandidate),
+                  ]
+                : localFileCandidates;
+
+            const remoteFileCandidates = remoteFiles?.map((candidate): DshReferenceCandidate | undefined => {
+                const presentation = referencePathPresentation(
+                    candidate.path,
+                    candidate.kind === "directory",
+                );
+                const insertText = formatFileReferenceMention(candidate, preserveQuote);
+                if (!insertText) return undefined;
+                return {
+                    kind: candidate.kind,
+                    label: presentation.label,
+                    insertText,
+                    ...(presentation.parent === undefined ? {} : { description: presentation.parent }),
+                };
+            }).filter((candidate): candidate is DshReferenceCandidate => candidate !== undefined);
+            const fileCandidates = remoteFileCandidates ?? orderedLocalFiles;
+
+            const remoteById = new Map(searchItems.map((item) => [item.sessionId, item]));
+            const sessionById = new Map<string, { sessionId: string; title?: string; cwd?: string; blank?: boolean }>();
+            for (const session of this.runtime.getSessionCatalog().snapshot().sessions) {
+                sessionById.set(session.sessionId, session);
+            }
+            for (const item of searchItems) {
+                if (!sessionById.has(item.sessionId)) sessionById.set(item.sessionId, { sessionId: item.sessionId });
+            }
+            const localSessionCandidates = [...sessionById.values()]
+                .filter((session) => session.blank !== true && session.sessionId !== this.sessionId)
+                .filter((session) => {
+                    if (!normalizedQuery) return true;
+                    const remote = remoteById.get(session.sessionId);
+                    const searchable = [session.sessionId, session.title, session.cwd, remote?.snippet]
+                        .filter((part): part is string => typeof part === "string")
+                        .join("\\n")
+                        .toLowerCase();
+                    return searchable.includes(normalizedQuery);
+                })
+                .map((session): DshReferenceCandidate => {
+                    const label = session.title?.trim() || session.sessionId;
+                    const remote = remoteById.get(session.sessionId);
+                    const description = [
+                        session.sessionId,
+                        session.cwd,
+                        remote?.snippet,
+                    ].filter((part): part is string => typeof part === "string" && part.length > 0).join(" · ");
+                    return {
+                        kind: "session",
+                        label,
+                        insertText: formatSessionReferenceMention(session.sessionId, label),
+                        ...(description ? { description } : {}),
+                    };
+                });
+            const remoteSessionCandidates = remoteSessions
+                ?.filter((candidate) => candidate.sessionId !== this.sessionId)
+                .map((candidate): DshReferenceCandidate => {
+                    const description = [
+                        candidate.sameWorkspace ? undefined : "other workspace",
+                        candidate.cwd,
+                        candidate.sessionId,
+                    ].filter((part): part is string => typeof part === "string" && part.length > 0).join(" · ");
+                    return {
+                        kind: "session",
+                        label: candidate.label,
+                        insertText: candidate.mention,
+                        ...(description ? { description } : {}),
+                    };
+                });
+            const sessionCandidates = remoteSessionCandidates ?? localSessionCandidates;
+            this.fileReferenceCandidates = [...terminalCandidates, ...fileCandidates, ...sessionCandidates].slice(0, 40);
+            this.postState();
+        } finally {
+            if (this.fileReferenceQueryAbort === controller) this.fileReferenceQueryAbort = undefined;
+        }
     }
 
     private async sendPrompt(

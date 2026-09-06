@@ -39,6 +39,8 @@ import {
     DshAgentPresetSelectResult,
     DshSessionRenameResult,
     DshSessionSearchResult,
+    DshFileReferenceCandidate,
+    DshSessionReferenceCandidate,
     DshSkillEntry,
     DshSkillListResult,
     DshProviderListResult,
@@ -66,6 +68,10 @@ import {
     HarnessQueueAction,
     RuntimeStatus,
 } from "./types";
+import {
+    normalizeFileReferenceCandidates,
+    normalizeSessionReferenceCandidates,
+} from "./referenceCandidates";
 
 type RuntimeListener = (status: RuntimeStatus) => void;
 type HarnessConnectedListener = () => void;
@@ -1295,6 +1301,58 @@ export class DshRuntime implements vscode.Disposable {
 
     public searchSessions(query: string, signal?: AbortSignal): Promise<DshSessionSearchResult> {
         return this.apiClient.call("session/search", { request: { query } }, signal);
+    }
+
+    /** Resolve Runtime-owned files and directories for the active Composer @ menu. */
+    public async listFileReferences(
+        sessionId: string,
+        query: string,
+        signal?: AbortSignal,
+    ): Promise<DshFileReferenceCandidate[] | undefined> {
+        try {
+            const value = await this.apiClient.call("fileReferences/list", {
+                agentId: sessionId,
+                query,
+            }, signal);
+            const candidates = normalizeFileReferenceCandidates(value);
+            if (!candidates) {
+                throw new RemoteProtocolError(
+                    "Remote fileReferences/list returned an invalid candidate list",
+                );
+            }
+            return candidates;
+        } catch (error) {
+            // RC1 clients can connect to an older Runtime that has no file
+            // reference provider. The Composer will use its local index then.
+            if (error instanceof RemoteHttpError && error.status === 404) return undefined;
+            throw error;
+        }
+    }
+
+    /** Resolve canonical cross-session mentions for the active Composer @ menu. */
+    public async listSessionReferenceCandidates(
+        sessionId: string,
+        query: string,
+        signal?: AbortSignal,
+    ): Promise<DshSessionReferenceCandidate[] | undefined> {
+        try {
+            const value = await this.apiClient.call("sessionReferenceResolver/candidates", {
+                agentId: sessionId,
+                query,
+            }, signal);
+            const candidates = normalizeSessionReferenceCandidates(value);
+            if (!candidates) {
+                throw new RemoteProtocolError(
+                    "Remote sessionReferenceResolver/candidates returned an invalid candidate list",
+                );
+            }
+            return candidates;
+        } catch (error) {
+            // Keep older Runtime versions useful by retaining the local catalog
+            // and session/search fallback when the optional Remote is absent.
+            if (error instanceof RemoteHttpError && error.status === 404) return undefined;
+            throw error;
+        }
     }
 
     public async renameSession(

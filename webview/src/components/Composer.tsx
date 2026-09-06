@@ -191,7 +191,10 @@ export const Composer = React.memo(function Composer({
     }, [completion.executeSlashCommand, imageDrafts, busy, submitting, promptMode, text]);
 
     const sendLabel = t("Send");
-    const referenceMatch = text.match(/(?:^|\s)@([^\s@]*)$/u);
+    const quotedReferenceMatch = text.match(/(?:^|\s)@"([^"]*)$/u);
+    const plainReferenceMatch = text.match(/(?:^|\s)@([^\s@]*)$/u);
+    const referenceMatch = quotedReferenceMatch ?? plainReferenceMatch;
+    const referenceQuoted = quotedReferenceMatch !== null;
     const referenceQuery = referenceMatch?.[1] ?? "";
     const referenceCandidates = referenceMatch && fileReferenceCandidates?.length
         ? fileReferenceCandidates
@@ -199,20 +202,26 @@ export const Composer = React.memo(function Composer({
     const referenceCandidateKey = referenceCandidates
         .map((candidate) => `${candidate.kind}:${candidate.insertText}`)
         .join("\u0000");
-    const referenceContextKey = `${referenceQuery}\u0000${referenceCandidateKey}`;
+    const referenceContextKey = (referenceQuoted ? "quoted" : "plain") + "\u0000" +
+        referenceQuery + "\u0000" + referenceCandidateKey;
     const referenceMenuVisible = referenceCandidates.length > 0 && dismissedReferenceKey !== referenceContextKey;
     useEffect(() => {
-        postAction({ type: "fileReferenceQuery", query: referenceQuery });
-    }, [referenceQuery]);
+        postAction({
+            type: "fileReferenceQuery",
+            query: referenceQuery,
+            ...(referenceQuoted ? { quoted: true } : {}),
+        });
+    }, [referenceQuery, referenceQuoted, sessionId]);
     useEffect(() => {
         setReferenceIndex(0);
         setDismissedReferenceKey(undefined);
     }, [referenceContextKey]);
 
     const chooseFileReference = (candidate: DshReferenceCandidate): void => {
-        const referenceStart = text.length - referenceQuery.length - 1;
+        const referenceStart = text.length - referenceQuery.length - (referenceQuoted ? 2 : 1);
         const prefix = text.slice(0, Math.max(0, referenceStart));
-        setText(`${prefix}${candidate.insertText} `);
+        const suffix = candidate.kind === "directory" ? "" : " ";
+        setText(prefix + candidate.insertText + suffix);
         setReferenceIndex(0);
         window.requestAnimationFrame(focusTextarea);
     };

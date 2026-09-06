@@ -28,12 +28,28 @@ export interface DshContextItem {
 
 /** One host-resolved candidate shown by the composer `@` reference menu. */
 export interface DshReferenceCandidate {
-    kind: "file" | "session" | "terminal";
+    kind: "file" | "directory" | "session" | "terminal";
     /** Readable label shown to the user. */
     label: string;
     /** Exact text inserted into the prompt when selected. */
     insertText: string;
     description?: string;
+}
+
+/** Path-only candidate returned by the Runtime `fileReferences/list` Remote. */
+export interface DshFileReferenceCandidate {
+    path: string;
+    kind: "file" | "directory";
+}
+
+/** Mention-bearing candidate returned by `sessionReferenceResolver/candidates`. */
+export interface DshSessionReferenceCandidate {
+    sessionId: string;
+    label: string;
+    cwd?: string;
+    sameWorkspace: boolean;
+    createdAt: number;
+    mention: string;
 }
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";

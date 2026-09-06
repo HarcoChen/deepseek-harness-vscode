@@ -36,7 +36,7 @@ export type ChatViewAction =
     | { type: "captureAppShot" }
     | { type: "removeContext"; id: string }
     | { type: "loadImage"; attachmentId: string }
-    | { type: "fileReferenceQuery"; query: string }
+    | { type: "fileReferenceQuery"; query: string; quoted?: boolean }
     | { type: "toggleSelection" }
     | { type: "start" }
     | { type: "stop" }
@@ -381,9 +381,17 @@ export function parseChatViewAction(value: unknown): ChatViewAction | undefined 
                 ? { type: "loadImage", attachmentId: value.attachmentId }
                 : undefined;
         case "fileReferenceQuery":
-            return hasOnly(value, ["type", "query"]) && typeof value.query === "string" && value.query.length <= 256
-                ? { type: "fileReferenceQuery", query: value.query }
-                : undefined;
+            if (
+                !hasOnly(value, ["type", "query", "quoted"]) ||
+                typeof value.query !== "string" ||
+                value.query.length > 256 ||
+                (value.quoted !== undefined && typeof value.quoted !== "boolean")
+            ) return undefined;
+            return {
+                type: "fileReferenceQuery",
+                query: value.query,
+                ...(value.quoted === undefined ? {} : { quoted: value.quoted }),
+            };
         case "mutateSettings": {
             if (
                 !hasOnly(value, ["type", "ns", "revision", "changes"]) ||

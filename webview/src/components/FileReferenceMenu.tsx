@@ -18,7 +18,7 @@ export function FileReferenceMenu({
             className="dsh-file-reference-menu"
             id={FILE_REFERENCE_MENU_ID}
             role="listbox"
-            aria-label={t("File references")}
+            aria-label={t("References")}
         >
             {candidates.map((candidate, index) => (
                 <button
