@@ -24,8 +24,8 @@ inventory、停止、移除和拒绝待批准请求，Client half 继续交给 H
 本轮进一步核对了多根语义：DSH 的 Session/DirectoryPicker 契约均是单 `cwd`，
 因此 VS Code multi-root 不作为一个 DSH Session 支持；同时为扩展启动的 Runtime
 补上了异常退出后的 1s/5s/15s 有界退避恢复，外部 Runtime 仍只复用、不接管。
-另复核了一轮能力边界：敏感内容自动识别、MCP 市场、浏览器自动化和云端后台
-Agent 均不在当前契约范围内。
+另复核了一轮能力边界：敏感内容自动识别仍不做，远程工作区仍只做测试，
+插件安装等能力继续受公开契约和 Host 安全边界约束。
 
 下方「契约基线」已按 `dsh-v0.1.2-rc.1` 与当前实现更新；`RPC_new.md` 与
 `RPC_ADAPTATION_PLAN.md` 仍保留为迁移审计和版本升级门禁。下次升级先按其 §14
@@ -100,7 +100,7 @@ projection 集合由当前 Loader composition 决定，不再用旧版固定总�
 - [ ] **消息反馈 UI/评测闭环**。上游 `messageFeedback.list/put/delete` 已有公开 `@Remote`（`deepseek-harness/packages/feedback/message-feedback/src/index.ts:189,205,271`）；`src/dshRuntime.ts`、`src/messageFeedback.ts` 与 `ChatViewProvider` 已保留 RPC、响应校验及 CAS 操作骨架，但消息入口和反馈状态呈现暂未接回 Webview。待评测、统计或导出闭环明确后再开放；反馈不写入 Session 日志、模型上下文或 telemetry。
 - [ ] **上下文用量与超限反馈补全**：发送前展示附件大小、截断与最终进入 prompt 的内容，支持移除大项。（基础用量与 `contextBreakdown` 占用归因已完成；不自动识别或分类秘密、个人信息等敏感内容，除非另有隐私策略和明确同意。）
 - [ ] **扩展 `@` 引用类型**：当前已有文件、目录、`@selection`、`@terminal`，以及 Runtime 侧 `fileReferences/list`、`sessionReferenceResolver/candidates` 候选；仍需 diagnostics、实际捕获范围展示，并补齐远程工作区实机验证。
-- [ ] **项目规则与 Prompt 模板**：提供本地 Markdown 规则/提示模板的只读发现和显式选择，作为可见上下文附件或预填文本；没有公开 Memory 协议时不自动注入或生成隐式记忆。
+- [ ] **项目规则与 Prompt 模板（其他 DSH 扩展对照后的可做项）**：提供本地 Markdown 规则/提示模板的只读发现和显式选择，作为可见上下文附件或预填文本；没有公开 Memory 协议时不自动注入或生成隐式记忆。
 
 ### 新 RPC（0.1.2-rc.1）解锁的功能候选（2026-09-06 对照 `dsh-v0.1.2-rc.1` 源码复核）
 
@@ -142,12 +142,14 @@ subagentTiming、modelSelection、turnOutline、schedule）；且
 - [ ] **Session 内容查询**：`deepseek-harness/packages/session-query` 下 `@Remote` 计数为 0；`session.search` 已消费（rc.1 起为公开 remote，但部署可禁用索引），服务端全文检索管理面无公开入口。
 - [ ] **自动标题状态**：`deepseek-harness/packages/session/session-title` 下 `@Remote` 计数为 0；`title` projection 已消费，但生成状态与失败降级无公开契约。
 
-## P1：本地能力候选
+## P1：待评估候选
 
-以下条目不假设新的 DSH RPC，优先保证用户主动选择、可见上下文和可撤销操作：
+以下候选优先复用现有 RC Remote 和 VS Code 稳定 API，不把未公开的实现
+当成 DSH 契约：
 
 - [ ] **`@diagnostics`**：附加用户主动选择的诊断项与范围，不默认把全工作区诊断送入 prompt。
-- [ ] **本地检查点设计**：先定义未跟踪文件、清理、并发修改和存储上限，再评估 shadow snapshot；现有原生 diff 不等于完整回滚。
+- [ ] **Prompt 模板**：发现 `.dsh/prompts` 下的本地 Markdown，只做可见预填，发送前由用户确认。
+- [ ] **Runtime 连接模式与生命周期可见性**：补 `attach-only`/`auto` 等状态表达，不改变外部 Runtime 只复用、不接管的规则。
 - [ ] **轻量代码库搜索**：先复用 VS Code 文件/符号能力，用户选中结果后再附加；向量索引暂不默认开启。
 
 ## P1：Runtime 可靠性
@@ -203,6 +205,13 @@ subagentTiming、modelSelection、turnOutline、schedule）；且
 
 ## P2：产品呈现
 
+- [ ] **原生 Chat Session provider 评估**：以 proposed API 做隔离 spike，与现有 `@dsh` Chat Participant/Webview 保持单一 Session 来源。
+- [ ] **编辑器 Tab 聊天入口评估**：参考其他 DSH 扩展的多入口形态，先验证 Session deep-link 和状态复用，避免维护第二套聊天状态。
+- [ ] **Plugin Center 安全 spike**：只在 Host 侧调用官方 `dsh plugin`，加入来源/兼容性/权限告知、显式确认、重启和回滚；不在 Webview 执行第三方代码。
+- [ ] **调试器控制安全 spike**：在现有暂停态上下文之上评估启动、断点、单步和变量读取；每个动作需白名单、确认、取消和超时。
+- [ ] **Session 导入/导出评估**：等待 DSH 导出格式稳定后再做显式文件选择，不复制第二套 Session 数据库。
+- [ ] **Inline completion / Ghost text 评估**：需要独立的模型路由、节流、取消、隐私和计费语义，暂不由 RC1 直接解锁。
+- [ ] **本地检查点设计**：先定义未跟踪文件、未保存编辑、并发修改、清理和存储上限，再评估 shadow snapshot；现有原生 diff 不等于完整回滚。
 - [ ] **Marketplace 截图与短 GIF**：展示流式回答、工具卡片、审批、计划评审、Activity Dock、Slash Commands 和 Trace 跳转。
 - [ ] **兼容版本说明**：记录验证过的 DSH 版本范围和协议变化，遇到不兼容版本时给出可操作提示。
 - [ ] **常见问题与故障排查**：覆盖找不到 dsh、API Key、空白 Webview、端口冲突、模型不可路由和远程工作区路径问题。
