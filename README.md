@@ -16,19 +16,19 @@
 <p align="center">
   <a href="https://open-vsx.org/extension/harcochen/dsh-vsc-integration"><img src="https://img.shields.io/open-vsx/dt/harcochen/dsh-vsc-integration?style=flat-square&label=Open%20VSX%20downloads" alt="Open VSX downloads"></a>
   <a href="https://marketplace.visualstudio.com/items?itemName=HarcoChen.dsh-vsc-integration"><img src="https://vsmarketplacebadges.dev/installs-short/HarcoChen.dsh-vsc-integration.svg?style=flat-square" alt="VS Code Marketplace installs"></a>
-  <a href="https://github.com/HarcoChen/deepseek-harness-vscode/stargazers"><img src="https://img.shields.io/github/stars/HarcoChen/deepseek-harness-vscode?style=flat-square" alt="GitHub Stars"></a>
-  <a href="https://github.com/HarcoChen/deepseek-harness-vscode/blob/main/LICENSE"><img src="https://img.shields.io/github/license/HarcoChen/deepseek-harness-vscode?style=flat-square" alt="License"></a>
+  <a href="https://github.com/HarcoChen/dsh-vsc-integration/stargazers"><img src="https://img.shields.io/github/stars/HarcoChen/dsh-vsc-integration?style=flat-square" alt="GitHub Stars"></a>
+  <a href="https://github.com/HarcoChen/dsh-vsc-integration/blob/main/LICENSE"><img src="https://img.shields.io/github/license/HarcoChen/dsh-vsc-integration?style=flat-square" alt="License"></a>
 </p>
 
 <p align="center">
   <a href="https://marketplace.visualstudio.com/items?itemName=HarcoChen.dsh-vsc-integration"><strong>Install for VS Code</strong></a> ·
   <a href="https://open-vsx.org/extension/harcochen/dsh-vsc-integration">Open VSX</a> ·
-  <a href="https://github.com/HarcoChen/deepseek-harness-vscode/releases">Download VSIX</a> ·
+  <a href="https://github.com/HarcoChen/dsh-vsc-integration/releases">Download VSIX</a> ·
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 <p align="center">
-  <em>An independent community project. <a href="https://github.com/HarcoChen/deepseek-harness-vscode/issues">Issues</a> welcome.</em>
+  <em>An independent community project. <a href="https://github.com/HarcoChen/dsh-vsc-integration/issues">Issues</a> welcome.</em>
 </p>
 
 <p align="center">
@@ -113,7 +113,7 @@ The bottom bar shows your current balance, including peak and off-peak pricing. 
 
 **Does DSH automatically identify secrets or personal information?** No. Context is based on files, selections, and attachments that you explicitly choose; DSH reports size/truncation but does not send workspace content to an additional secret/PII classifier.
 
-**What if startup fails?** Run `DSH: Diagnose Environment`, then `DSH: Show dsh Runtime Logs` from the Command Palette. Include your extension version, OS, and redacted error details when opening an [issue](https://github.com/HarcoChen/deepseek-harness-vscode/issues).
+**What if startup fails?** Run `DSH: Diagnose Environment`, then `DSH: Show dsh Runtime Logs` from the Command Palette. Include your extension version, OS, and redacted error details when opening an [issue](https://github.com/HarcoChen/dsh-vsc-integration/issues).
 
 **Does it support Chinese?** Yes. Commands, chat, Activity, and Trace follow VS Code's display language, with English and Simplified Chinese available.
 
@@ -151,7 +151,7 @@ Search `dsh` in VS Code settings for the full list.
 
 ## Other ways to install
 
-**From GitHub Releases** — download the `.vsix` from [Releases](https://github.com/HarcoChen/deepseek-harness-vscode/releases) and run `Extensions: Install from VSIX...`. Pre-release builds are published only to GitHub Releases.
+**From GitHub Releases** — download the `.vsix` from [Releases](https://github.com/HarcoChen/dsh-vsc-integration/releases) and run `Extensions: Install from VSIX...`. Pre-release builds are published only to GitHub Releases.
 
 **Build from source**:
 
