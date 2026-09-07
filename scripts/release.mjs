@@ -18,6 +18,12 @@ The release command requires a clean worktree and a non-empty CHANGELOG.md
 [Unreleased] section. It runs the test suite, updates package metadata,
 promotes the Unreleased notes, commits, and creates the matching vX.Y.Z tag.
 
+Channels follow the odd/even minor convention from 0.8.0 on: stable rides even
+minors (0.8.x) and the pre-release track stays a minor ahead (0.9.x). The
+release workflow reads the same rule, so releasing an odd-minor version
+publishes it as a pre-release. This command prints the resolved channel before
+it touches anything.
+
 When the current version is a prerelease (e.g. 0.6.0-beta.1), releasing its
 stable version folds every matching prerelease section of the CHANGELOG into
 the new stable entry, so the graduated release lists everything its betas
@@ -285,6 +291,11 @@ function main() {
     const changelog = readFileSync(changelogPath, "utf8");
     const nextChangelog = promoteChangelog(changelog, version, currentVersion);
     console.log(`Preparing ${tag}`);
+    // Mirror the workflow's channel rule so the channel is visible before the
+    // tag exists, rather than discovered after CI has already published.
+    const parsed = parseVersion(version);
+    const preRelease = Boolean(parsed) && (parsed.prerelease !== null || parsed.release[1] % 2 === 1);
+    console.log(`- channel: ${preRelease ? "pre-release (odd minor or prerelease suffix)" : "stable"}`);
     console.log(`- test suite`);
     console.log(`- package.json and package-lock.json -> ${version}`);
     console.log(`- CHANGELOG.md [Unreleased] -> ${version}`);

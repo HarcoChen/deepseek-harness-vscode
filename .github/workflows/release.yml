@@ -51,15 +51,26 @@ jobs:
             exit 1
           fi
 
-          # A SemVer pre-release tag (0.6.0-beta.1) marks a build that is not
-          # for the general channel. It still reaches Open VSX, but packaged
-          # and published with `--pre-release`, so the registry flags it and
-          # only clients whose user opted into pre-releases upgrade into it.
-          # The GitHub release is marked pre-release as well. Note that the
-          # VS Code Marketplace rejects SemVer pre-release suffixes outright,
-          # so these versions never go there (that publish is manual anyway).
+          # Two independent signals mark a build as "not for the general
+          # channel", and either one is enough:
+          #
+          #   * an odd minor version. From 0.8.0 on, stable rides even minors
+          #     (0.8.x) and the pre-release track stays a minor ahead (0.9.x).
+          #     Clients always update to the highest version number regardless
+          #     of channel, so keeping the pre-release number above every
+          #     stable one is what stops a stable release from pulling
+          #     pre-release users out of their channel.
+          #   * a SemVer pre-release suffix (0.6.0-beta.1). Kept because the
+          #     VS Code Marketplace rejects such versions outright — those
+          #     builds can only ever reach Open VSX and GitHub Releases.
+          #
+          # A marked build is packaged and published with `--pre-release`, so
+          # the registry flags it and only users who opted into pre-releases
+          # upgrade into it; the GitHub release is marked pre-release too.
+          MINOR="${VERSION#*.}"
+          MINOR="${MINOR%%.*}"
           PRERELEASE=false
-          if [[ "${VERSION}" == *-* ]]; then
+          if [[ "${VERSION}" == *-* ]] || (( MINOR % 2 == 1 )); then
             PRERELEASE=true
           fi
 
