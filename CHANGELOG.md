@@ -9,6 +9,8 @@
 
 <!-- 在这里填写下一版本的发布说明；npm run release 会自动提升这一节。 -->
 
+## [0.9.0] - 2026-09-07
+
 本版本是 `0.7.0-beta.1` 那批功能的第一个**可安装**构建：`0.7.0-beta.1` 的 vsix 漏了运行时依赖，装上后必然卡在加载，该版本已从 Open VSX 撤回。完整的功能与协议变更见下方 `0.7.0-beta.1` 条目。
 
 ### ⚠️ 破坏性变更
@@ -195,6 +197,7 @@
 
 - 首个社区预览版本，提供 `dsh web` Runtime 集成、侧栏聊天和 IDE 上下文附加。
 
+[0.9.0]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.7.0-beta.1...v0.9.0
 [0.7.0-beta.1]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.6.2...v0.7.0-beta.1
 [0.6.2]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.6.0...v0.6.1
