@@ -303,6 +303,50 @@
     overflow-wrap: anywhere;
 }
 
+/* Scroll containers whose children are plain text are unreachable by keyboard
+   unless the container itself takes focus; these carry tabIndex={0}. */
+.dsh-goal-error-detail pre:focus-visible,
+.dsh-subagent-transcript:focus-visible,
+.dsh-schedule-items:focus-visible,
+.dsh-todo-items:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 2px;
+}
+
+/* schedule */
+
+.dsh-schedule-items {
+    display: flex;
+    flex-direction: column;
+    max-height: 260px;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+}
+
+.dsh-schedule-item {
+    padding: var(--dsh-space-2) 0;
+    border-top: 1px solid var(--dsh-border);
+}
+
+.dsh-schedule-prompt {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.dsh-schedule-meta,
+.dsh-schedule-id {
+    color: var(--vscode-descriptionForeground);
+    font-size: var(--dsh-font-xs);
+    overflow-wrap: anywhere;
+}
+
+.dsh-schedule-id {
+    margin-top: var(--dsh-space-1);
+    font-family: var(--vscode-editor-font-family);
+}
+
 /* permissions */
 
 /* Switchable entries are buttons; the current one stays a plain row. */

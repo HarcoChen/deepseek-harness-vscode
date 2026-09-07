@@ -18,7 +18,7 @@ function GoalError({ error }: { error: string }): React.JSX.Element {
             {detail ? (
                 <details className="dsh-goal-error-detail">
                     <summary>{t("Technical details")}</summary>
-                    <pre>{detail}</pre>
+                    <pre tabIndex={0}>{detail}</pre>
                 </details>
             ) : null}
         </div>

@@ -28,12 +28,28 @@ export interface DshContextItem {
 
 /** One host-resolved candidate shown by the composer `@` reference menu. */
 export interface DshReferenceCandidate {
-    kind: "file" | "session" | "terminal";
+    kind: "file" | "directory" | "session" | "terminal";
     /** Readable label shown to the user. */
     label: string;
     /** Exact text inserted into the prompt when selected. */
     insertText: string;
     description?: string;
+}
+
+/** Path-only candidate returned by the Runtime `fileReferences/list` Remote. */
+export interface DshFileReferenceCandidate {
+    path: string;
+    kind: "file" | "directory";
+}
+
+/** Mention-bearing candidate returned by `sessionReferenceResolver/candidates`. */
+export interface DshSessionReferenceCandidate {
+    sessionId: string;
+    label: string;
+    cwd?: string;
+    sameWorkspace: boolean;
+    createdAt: number;
+    mention: string;
 }
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
@@ -472,6 +488,149 @@ export interface DshAgentPresetReadResult {
     description?: string;
 }
 
+export type DshPluginFiberPhase =
+    | "pending"
+    | "loading"
+    | "active"
+    | "failed"
+    | "unloading"
+    | null;
+
+export interface DshPluginInventoryEntry {
+    entryId: string;
+    moduleName: string;
+    enabled: boolean;
+    fiberPhase: DshPluginFiberPhase;
+}
+
+export type DshPluginPresetEnablement = boolean | "conditional";
+
+export interface DshPluginInventoryRow {
+    entryId: string | null;
+    moduleName: string;
+    enabled: DshPluginPresetEnablement;
+    condition?: string;
+    fiberPhase: DshPluginFiberPhase;
+}
+
+export interface DshPluginInventoryPreset {
+    id: string;
+    trust: "system" | "user";
+    name?: string;
+    isDefault: boolean;
+    broken?: string;
+    rows: DshPluginInventoryRow[];
+}
+
+export interface DshPluginInventorySnapshot {
+    entries: DshPluginInventoryEntry[];
+    agentPresets?: DshPluginInventoryPreset[];
+}
+
+/** Settings-owned state for the read-only plugin inventory tab. */
+export interface DshPluginInventoryPanelView extends DshPluginInventorySnapshot {
+    loading?: boolean;
+    error?: string;
+}
+
+export type DshDynamicPluginRunMode = "run" | "update";
+
+export type DshDynamicPluginRunStatus =
+    | "awaiting-approval"
+    | "starting-host"
+    | "client-pending"
+    | "running"
+    | "waiting"
+    | "rejected"
+    | "failed"
+    | "cancelled"
+    | "stopped";
+
+export type DshDynamicPluginHalfStatus =
+    | "absent"
+    | "pending"
+    | "stopped"
+    | "running"
+    | "waiting"
+    | "failed";
+
+export interface DshDynamicPluginPackage {
+    packageId: string;
+    name: string;
+    purpose: string;
+    hasHostHalf: boolean;
+    hasClientHalf: boolean;
+}
+
+export interface DshDynamicPluginHalf {
+    status: DshDynamicPluginHalfStatus;
+    waitingFor: string[];
+    error?: string;
+}
+
+export type DshDynamicPluginDiagnosticPhase =
+    | "approval"
+    | "host-load"
+    | "host-apply"
+    | "client-load"
+    | "client-apply"
+    | "client-render";
+
+export interface DshDynamicPluginDiagnostic {
+    phase: DshDynamicPluginDiagnosticPhase;
+    message: string;
+    stack?: string;
+    pluginId: string;
+    packageId: string;
+    pluginRunId: string;
+}
+
+export interface DshDynamicPluginRunAttempt {
+    pluginRunId: string;
+    packageId: string;
+    mode: DshDynamicPluginRunMode;
+    status: DshDynamicPluginRunStatus;
+    approvalRequestId?: string;
+    requiresApproval?: boolean;
+    host: DshDynamicPluginHalf;
+    client: DshDynamicPluginHalf;
+    error?: DshDynamicPluginDiagnostic;
+}
+
+export interface DshDynamicPluginActiveRun {
+    pluginRunId: string;
+    packageId: string;
+}
+
+export interface DshDynamicPluginRow {
+    pluginId: string;
+    agentId: string;
+    packages: DshDynamicPluginPackage[];
+    currentPackageId?: string;
+    nextPackageId?: string;
+    activeRun?: DshDynamicPluginActiveRun;
+    latestRun?: DshDynamicPluginRunAttempt;
+}
+
+/** Activity-dock state for the optional dynamic Cordis plugin runner. */
+export interface DshDynamicPluginPanelView {
+    rows: DshDynamicPluginRow[];
+    loading?: boolean;
+    error?: string;
+}
+
+export type DshDynamicPluginStopResult =
+    | { ok: true }
+    | { ok: false; reason: "plugin-missing" | "not-running"; message: string };
+
+export type DshDynamicPluginRemoveResult =
+    | { ok: true; wasRunning: boolean }
+    | { ok: false; reason: "plugin-missing"; message: string };
+
+export interface DshDynamicPluginResolveResult {
+    accepted: boolean;
+}
+
 export type DshAgentPresetOpenResult =
     | { opened: true }
     | { opened: false; path: string };
@@ -704,6 +863,7 @@ export interface DshSettingsPanelView {
     writable: boolean;
     hasDocument: boolean;
     cards: DshSettingsCardView[];
+    pluginInventory?: DshPluginInventoryPanelView;
     error?: string;
 }
 
@@ -982,6 +1142,7 @@ export interface ChatViewState {
     context: DshContextItem[];
     fileReferenceCandidates?: DshReferenceCandidate[];
     settings?: DshSettingsPanelView;
+    dynamicPlugins?: DshDynamicPluginPanelView;
     selection?: DshContextItem;
     selectionEnabled: boolean;
     status: RuntimeStatus;
@@ -1029,6 +1190,7 @@ export interface ChatViewState {
     reasoningEffort?: ReasoningEffortView;
     permissions?: PermissionProjectionView;
     todos?: DshTodoItemView[];
+    schedule?: DshScheduleItem[];
     imageLimits?: DshImageLimitsView;
     plan?: DshPlanProjection;
     messageFeedback?: DshMessageFeedbackStateView;
@@ -1076,6 +1238,29 @@ export interface DshTodoItemView {
     content: string;
     status: "pending" | "in_progress" | "completed";
 }
+
+/** Active reminder record projected by the Runtime Schedule package. */
+export type DshScheduleItem =
+    | {
+          id: string;
+          kind: "after";
+          prompt: string;
+          afterSeconds: number;
+          scheduledAt: string;
+      }
+    | {
+          id: string;
+          kind: "at";
+          prompt: string;
+          scheduledAt: string;
+      }
+    | {
+          id: string;
+          kind: "every";
+          prompt: string;
+          everySeconds: number;
+          scheduledAt: string;
+      };
 
 export interface ChangeReviewView {
     turn: number;

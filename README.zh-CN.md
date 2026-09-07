@@ -15,19 +15,19 @@
 <p align="center">
   <a href="https://open-vsx.org/extension/harcochen/dsh-vsc-integration"><img src="https://img.shields.io/open-vsx/dt/harcochen/dsh-vsc-integration?style=flat-square&label=Open%20VSX%20%E4%B8%8B%E8%BD%BD%E9%87%8F" alt="Open VSX 下载量"></a>
   <a href="https://marketplace.visualstudio.com/items?itemName=HarcoChen.dsh-vsc-integration"><img src="https://vsmarketplacebadges.dev/installs-short/HarcoChen.dsh-vsc-integration.svg?style=flat-square" alt="VS Code Marketplace installs"></a>
-  <a href="https://github.com/HarcoChen/deepseek-harness-vscode/stargazers"><img src="https://img.shields.io/github/stars/HarcoChen/deepseek-harness-vscode?style=flat-square" alt="GitHub Stars"></a>
-  <a href="https://github.com/HarcoChen/deepseek-harness-vscode/blob/main/LICENSE"><img src="https://img.shields.io/github/license/HarcoChen/deepseek-harness-vscode?style=flat-square" alt="许可证"></a>
+  <a href="https://github.com/HarcoChen/dsh-vsc-integration/stargazers"><img src="https://img.shields.io/github/stars/HarcoChen/dsh-vsc-integration?style=flat-square" alt="GitHub Stars"></a>
+  <a href="https://github.com/HarcoChen/dsh-vsc-integration/blob/main/LICENSE"><img src="https://img.shields.io/github/license/HarcoChen/dsh-vsc-integration?style=flat-square" alt="许可证"></a>
 </p>
 
 <p align="center">
   <a href="https://marketplace.visualstudio.com/items?itemName=HarcoChen.dsh-vsc-integration"><strong>安装到 VS Code</strong></a> ·
   <a href="https://open-vsx.org/extension/harcochen/dsh-vsc-integration">Open VSX</a> ·
-  <a href="https://github.com/HarcoChen/deepseek-harness-vscode/releases">下载 VSIX</a> ·
+  <a href="https://github.com/HarcoChen/dsh-vsc-integration/releases">下载 VSIX</a> ·
   <a href="CHANGELOG.md">更新日志</a>
 </p>
 
 <p align="center">
-  <em>独立社区项目，欢迎提 <a href="https://github.com/HarcoChen/deepseek-harness-vscode/issues">issue</a>。</em>
+  <em>独立社区项目，欢迎提 <a href="https://github.com/HarcoChen/dsh-vsc-integration/issues">issue</a>。</em>
 </p>
 
 <p align="center">
@@ -106,7 +106,11 @@
 
 **可以连接已有 Runtime 吗？** 可以，将 `dsh.serverUrl` 设置为正在运行的 `dsh web` 地址。扩展已适配 `dsh 0.1.2-rc.1` 的 RC Remote RPC，默认托管 Runtime 为 `0.1.2-rc.1`。
 
-**启动失败怎么办？** 在命令面板运行 `DSH: Diagnose Environment` 查看诊断，再用 `DSH: Show dsh Runtime Logs` 查看日志。提交 [issue](https://github.com/HarcoChen/deepseek-harness-vscode/issues) 时请附上扩展版本、操作系统和脱敏后的错误信息。
+**支持多根工作区吗？** DSH 支持多个彼此独立的 Workspace，但每个 Session 只有一个工作目录（`cwd`）。VS Code 多根工作区启动 Runtime 时使用第一个 workspace folder；如果不同根目录需要不同工作目录，请分别建立 DSH Workspace 或 Session。
+
+**会自动识别密钥或个人信息吗？** 不会。上下文目前只根据用户主动选择的文件、选区和附件计算大小与截断；不会把文件内容交给额外的秘密/个人信息分类器。
+
+**启动失败怎么办？** 在命令面板运行 `DSH: Diagnose Environment` 查看诊断，再用 `DSH: Show dsh Runtime Logs` 查看日志。提交 [issue](https://github.com/HarcoChen/dsh-vsc-integration/issues) 时请附上扩展版本、操作系统和脱敏后的错误信息。
 
 **支持中文吗？** 支持。命令、聊天、活动面板和 Trace 界面会跟随 VS Code 显示语言，提供英文与简体中文。
 
@@ -144,7 +148,7 @@ graph TD
 
 ## 其他安装方式
 
-**从 GitHub Releases 安装**：下载 [Releases](https://github.com/HarcoChen/deepseek-harness-vscode/releases) 里的 `.vsix`，运行 `Extensions: Install from VSIX...`。预发布版本仅发布到 GitHub Releases。
+**从 GitHub Releases 安装**：下载 [Releases](https://github.com/HarcoChen/dsh-vsc-integration/releases) 里的 `.vsix`，运行 `Extensions: Install from VSIX...`。预发布版本仅发布到 GitHub Releases。
 
 **从源码构建**：
 

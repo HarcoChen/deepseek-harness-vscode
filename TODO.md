@@ -14,9 +14,38 @@ baseline、workspace 生命周期、能力端点、错误路径）全绿；**UI 
 prompt）。第 8 步的版本发布用 `npm run release` 执行，CHANGELOG
 [Unreleased] 已备好。
 
-下方「契约基线」一节仍是 `0.1.1-rc.2` 时代的数字；本轮 rc.1 的 endpoint
-审计在 `RPC_new.md` 与 `RPC_ADAPTATION_PLAN.md`，下次升级按其 §14 门禁先做
-tag diff 再动 pin。
+本次增量消费 `pluginInventory/list`：Runtime 对 Loader 条目和 Agent preset
+组合做严格快照校验，设置面板提供全局/会话分组、生命周期相位、搜索和手动刷新；
+仍保持只读，不凭空添加插件管理动作。随后接入 dynamic Cordis Host 面板：
+inventory、停止、移除和拒绝待批准请求，Client half 继续交给 Harness Web UI。
+文件位置跳转在本地边界检查失败且 Host 宣布 `canOpenPath` 时回落到
+`session/openWorkspacePath`，为远程工作区保留公开协议路径。
+
+本轮进一步核对了多根语义：DSH 的 Session/DirectoryPicker 契约均是单 `cwd`，
+因此 VS Code multi-root 不作为一个 DSH Session 支持；同时为扩展启动的 Runtime
+补上了异常退出后的 1s/5s/15s 有界退避恢复，外部 Runtime 仍只复用、不接管。
+另复核了一轮能力边界：敏感内容自动识别仍不做，远程工作区仍只做测试，
+插件安装等能力继续受公开契约和 Host 安全边界约束。
+
+下方「契约基线」已按 `dsh-v0.1.2-rc.1` 与当前实现更新；`RPC_new.md` 与
+`RPC_ADAPTATION_PLAN.md` 仍保留为迁移审计和版本升级门禁。下次升级先按其 §14
+做 tag diff，再调整 runtime pin。
+
+同日重构增量：chatView 三套目录缓存（model / skill / command）的手抄并发骨架
+收拢为 vscode-free 的 `src/sessionCatalogCache.ts`（value map、请求去重、失效代际、
+重拉排队各留一处实现），`npm run check` 与 `npm test`（50 项）验证通过；
+`handleMessage` 拆分与 Subagent 编排仍是重构余项。
+Subagent 编排随后也已迁出：树刷新/历史预览/跟进/中断与 6 个私有字段整体移入
+`src/subagentController.ts`（425 行），按 `ProviderManagementDeps` 先例注入
+`runtime` + `currentRootSession()` + `onChange()` 三个依赖，ChatViewProvider 仅在
+构造器订阅、handleMessage 五个 case、postState/loadImage 读取、dispose 处接线；
+迁出代码经机械替换归一后与原实现逐行等价（仅类内方法顺序不同）。messageFeedback
+的状态与 CAS 骨架（4 字段 + 接口 + 2 个模块级 helper + 12 个方法）同法迁入
+`src/messageFeedbackController.ts`（395 行，含保留未接线的 `messageFeedbackView`/
+`decorateMessageFeedback`）。chatView.ts 3975 → 3175 行；重构余项：
+`handleMessage` switch 拆处理器表（结构收益为主，行数基本持平），以及
+settings/动态插件域（约 250 行）与 `updateFileReferenceCandidates`（约 200 行，
+vscode 依赖较重）两个可选迁出。
 
 ## 本轮进展（2026-08-26）
 
@@ -39,26 +68,44 @@ i18n 重复 key），否则都会作为运行时坏包发出——这是它最�
 `tracePanel` 的 425 行内联 UI 已迁完（966 → 611 行），仓库中不再有未经类型检查
 的 UI 代码——这是本轮两处基础设施改动（webview typecheck、资源管线）合起来的结果。
 
-**尚未起头的大项**：4 处超长函数提取、Gateway 通道及其依赖的两个功能。
-这些需要成块的时间，没有起头，不是做了一半。
+**当时尚未起头的大项（历史记录）**：4 处超长函数提取、Gateway 通道及其依赖的两个功能。
+这些需要成块的时间；随后 RC Remote 迁移已在 2026-09-06 完成，剩余是验收与功能消费。
 
 **需要人工验证**：Trace 面板无测试覆盖，迁移后的行为我无法目视确认，
 验证清单写在「重构 → 结构」该条目里。
 
-## 契约基线（2026-08-26 复核）
+## 契约基线（当前快照：2026-09-06，目标 `dsh-v0.1.2-rc.1`）
 
-上游 checkout 已更新至 `0.1.1-rc.2`，与 `dsh.runtimeVersion` 默认 pin 一致。以下数字是后续条目的证据基础，动手前先复核；上游迭代很快，过期的基线会让整张表失效。
+当前默认 pin 是 `0.1.2-rc.1`（目标 commit：
+`a66e4702047846cdaa10c66c9d3df3951f5ea70d`）。RC Remote 的 endpoint 和
+projection 集合由当前 Loader composition 决定，不再用旧版固定总数判断兼容性。
 
-- **Unary RPC**（`POST /api/<method>`，点号形式）：上游 52 条（`deepseek-harness/packages/host/apiproxy/src/fetch/handler.ts:90-143`），扩展消费 45 条（`src/harnessProtocol.ts:36-179`），无悬空引用。
-- **Session projection**：上游注册 13 个，注册插件在 `bundle/base` 与 `bundle/web-app` 均已挂载，默认安装下都是活的；扩展消费 8 个（`goal`、`todos`、`tokenUsage`、`contextPressure`、`title`、`sessionStats`、`permissions`、`imageLimits`）。
-  `GenericProjectionStore`（`src/sessionStore.ts:234-265`）按任意字符串 key 存储，**未消费的 projection 其实已经到达并缓存**，`src/tracePanel.ts:854` 已泛化渲染其原始值。因此接入新 projection 是纯呈现层工作，不动传输、不改运行时组合。
-- **Typert Gateway**（`POST /api/<namespace>/<method>`，斜杠形式，与 unary 共用 `/api` 基址，见 `deepseek-harness/packages/api/gateway/src/index.ts:106-116`）：`goal.*` 与 `skill.*` 已有 unary 镜像并被消费；`commands`、`fileReference`、`sessionReference`、`pluginInventory`、`messageFeedback` 五个 namespace **无 unary 镜像，尚未接入**。同基址同动词，接入成本是 `src/harnessClient.ts` 的中等增量。
-
-## P0：先行安全网
-
-- [x] **Webview 纳入类型检查**。`tsconfig.json` 的 `include` 只有 `src`，`jsx` 选项未设置，tsc program 实际包含 40 个 `src/` 文件、**0 个 `webview/` 文件**；esbuild 只剥类型不校验。`webview/` 那 4.3k 行 React 既不过 `npm run check`，也不过 CI 门禁 `npm test`。
-      做法：新增 `webview/tsconfig.json`（`jsx: react-jsx`、`allowSyntheticDefaultImports`、`lib` 含 DOM），`check` 脚本串联两个 project。
-      **单独一个 commit，不夹带任何行为改动** —— 补上后大概率当场冒出一批既存类型错误，混在别的改动里就分不清是谁引入的。这一项是其余所有 Webview 改动的前置。
+- **RC Remote unary**：统一走 `POST /api/<namespace>/<method>`，请求为
+  `payload: {args: ...}`，由 `src/remote/unaryClient.ts` 严格校验 envelope、
+  endpoint、rpcId、响应和 namespaced error。`DshRuntime` 当前消费 session、
+  workspace、subagents、goals、agentPresets、pluginInventory、dynamicCordisRunner、skills、commands、settings、
+  credentials、llm、directoryPicker、fileReferences、
+  sessionReferenceResolver 与 messageFeedback 等已挂载能力；生产代码不再
+  依赖旧点号 endpoint map。
+- **RC Remote streams**：`/api/remote.mux` 由 `RemoteMuxClient` 承载 `$events`、
+  `workspace/follow`、`session/control` 和按需 `session/follow`；
+  `RemoteStateCoordinator` 以 generation baseline、cursor 和高 seq projection
+  合并重连状态。旧的双 WebSocket、`server-request`、`/api/respond` 已移除。
+- **Session projection**：projection cell 以任意字符串 key + seq 进入
+  `GenericProjectionStore`，未消费的 key 仍会到达并缓存。当前 UI 消费
+  `goal`、`todos`、`tokenUsage`、`contextPressure`、`contextBreakdown`、
+  `title`、`sessionStats`、`permissions`、`imageLimits`、`plan`、
+  `subagentTiming`、`modelSelection`、`turnOutline` 与 `schedule`；其中
+  `modelSelection` 已按 projection 变化实时更新模型/推理强度状态，`turnOutline`
+  已驱动对话导航，`schedule` 已接入 Activity Dock 只读面板。
+  Session 元数据只携带单个可选 `cwd`；这不是 VS Code multi-root 的多路径绑定。
+- **Typert Gateway capability**：`commands/list|execute`、
+  `fileReferences/list`、`sessionReferenceResolver/candidates` 已由 UI/Runtime
+  消费；文件与会话引用在 404/旧 Runtime 时回退本地候选。`messageFeedback` 仍
+  只有 RPC、响应校验和 CAS 骨架，前端入口待评测闭环；`pluginInventory/list`
+  已接入设置面板只读清单；动态插件 inventory/stop/remove/decline 已接入
+  Activity Dock（源码不在 Extension Host 执行）。所有 RC1 调用均经 `src/remote/`，不要再按已删除的
+  `src/harnessClient.ts`、`src/harnessProtocol.ts` 估算接入成本。
 
 ## P0：BUG修复
 
@@ -66,65 +113,35 @@ i18n 重复 key），否则都会作为运行时坏包发出——这是它最�
 
 ## P1：功能（按性价比排序，均已核对公开契约）
 
-- [x] 任意消息「从这里 Fork / 回到这里」——我最推荐先做。 这几乎已经是白送的功能：你 DshRuntime.forkSession(sessionId, atSeq?) 已经支持 atSeq，但当前 ChatViewProvider.forkSession() 没传它，只能从最新位置 fork。 直接给每个 user/assistant turn hover 菜单加三个动作：Fork from here、Restore code to here、Fork + restore code。后两个还能复用你现有的 changeReviewStore.restore(sessionId, turn)。 这就基本得到 Claude Code 那套 checkpoint/rewind UX；Claude 当前 VS Code 扩展也确实把这三个语义拆成 fork、rewind code、fork+rewind。 工作量低，感知价值极高。
-- [x] **IDE 内 Provider 配置**。`llm.models` 与 `llm.discoverModels` 是 52 条 unary 路由里未消费的两条。当前未配置 Provider 一律引导去 dsh Web UI（`0.5.3` 变更记录），这两条正是在 IDE 内枚举并配置所缺的能力。改动面 `src/chatView.ts` 的 `manageProviders`。
-- [x] 把你 TODO 里“Terminal / PTY context 不可做”翻案。 这一条 TODO 已经过期了：当前稳定 VS Code API 已有 onDidStartTerminalShellExecution / onDidEndTerminalShellExecution，而且 TerminalShellExecution.read() 能流式读该次命令输出，还能拿 command line、cwd、exit code；这个 API 从 VS Code 1.93 就稳定了，而你最低版本已经是 ^1.106.0。 需要注意的是不能ย้อนหลัง读取 extension 启动前的 scrollback，只能从执行开始时监听，所以正确做法是维护一个每 Terminal 最近 N 条命令的 ring buffer。然后做：@terminal:last、@terminal:pytest、附件菜单「Recent terminal command」、非 0 exit code 后出现一个很轻的 Ask DSH 入口。这样用户刚跑完 npm test 爆了一屏错误，根本不用复制粘贴。这会是非常强的 IDE Integration 卖点。终端命令捕获已接入 IDE 上下文、引用补全和失败命令预填入口；仅保留内存中的扩展激活后命令，不读取或持久化既有 scrollback。
-
-- [x] **Subagent 运行时长**。`subagentTiming`（上游 `deepseek-harness/packages/subagent/subagent/src/projection.ts:62`），wire 形状 `{settledMs, active?: {since, through}}`。`SubagentTreeNodeView` 目前只有二值 `activity: "running" | "inactive"`，没有任何时长，这是真正的新信息。
-      **身份部分不做**：另一个单元注册的 key 是 `subagent`（不是 `subagentIdentity`，`projection.ts:169`），其 `label` / `mode` 已由 `subagent.list` 放在树节点上，重复。
-- [ ] **消息反馈**。上游 `messageFeedback.list/put/delete` 已有公开 `@Remote`（`deepseek-harness/packages/feedback/message-feedback/src/index.ts:189,205,271`），协议与 Host sidecar 已保留；前端入口暂隐藏，待评测、统计或导出闭环明确后再开放。反馈不写入 Session 日志、模型上下文或 telemetry。
-- [x] **`plan` 投影**。严格校验上游 `{active, pending}` wire 值并透传到 ChatView；Composer 按 `pending ? !active : active` 展示 `Plan ×` 状态，支持点击、`Shift+Tab` 或 `/plan off` 切换，并切换生成计划的输入提示。计划评审仍走 interaction 卡片。
-- [ ] **上下文用量与超限反馈补全**：发送前展示附件大小、截断与敏感文件风险，支持移除大项并说明最终进入 prompt 的内容。（基础部分已完成，缺 `contextBreakdown` 支撑的占用归因。）
-- [ ] **扩展 `@` 引用类型**：在文件与 `@selection` 之外增加目录、diagnostics，并显示实际捕获范围
-- [ ] **项目记忆入口**：优先复用 Harness 公开 Memory/Skill 能力；无公开协议时只提供打开明确文件的 IDE 操作，不自动把自建记忆拼入所有 prompt。
-- [x] S：Debug Context——让 DSH 真正“看见断点现场”。 现在你已经能附加 Diagnostics，但 Debugger 是明显的下一步。`vscode.debug.activeStackItem` 可以直接拿当前 thread/frame，当前 frame 有 `frameId`/`threadId`/`session`，再通过标准 DAP `stackTrace` → `scopes` → `variables` 就能拿调用栈和局部变量。已实现单向快照：`DSH: Explain Current Debug State` 从当前聚焦的调试线程/帧采集停止原因、前 10 层 stack、局部变量、当前源码附近 24 行和 workspace diagnostics，敏感变量名脱敏并限制总大小；快照作为一次性 IDE context 注入下一条 prompt。Debug Toolbar 在暂停时提供入口，`/ide` 选择器也可手动触发。暂不引入 DSH 插件、双向 RPC 或 evaluate/step 控制。
+- [ ] **消息反馈 UI/评测闭环**。上游 `messageFeedback.list/put/delete` 已有公开 `@Remote`（`deepseek-harness/packages/feedback/message-feedback/src/index.ts:189,205,271`）；状态与 CAS 骨架已整体迁至 `src/messageFeedbackController.ts`（ChatViewProvider 仅转发两个 webview case），消息入口和反馈状态呈现仍未接回 Webview——`messageFeedbackView`/`decorateMessageFeedback` 保留在控制器中待接线。待评测、统计或导出闭环明确后再开放；反馈不写入 Session 日志、模型上下文或 telemetry。
+- [ ] **上下文用量与超限反馈补全**：发送前展示附件大小、截断与最终进入 prompt 的内容，支持移除大项。（基础用量与 `contextBreakdown` 占用归因已完成；不自动识别或分类秘密、个人信息等敏感内容，除非另有隐私策略和明确同意。）
+- [ ] **扩展 `@` 引用类型**：当前已有文件、目录、`@selection`、`@terminal`，以及 Runtime 侧 `fileReferences/list`、`sessionReferenceResolver/candidates` 候选；仍需 diagnostics、实际捕获范围展示，并补齐远程工作区实机验证。
+- [ ] **项目规则（Prompt 模板已交付，见下）**：提供本地规则 Markdown 的只读发现和显式选择，作为可见上下文附件；没有公开 Memory 协议时不自动注入或生成隐式记忆。
 
 ### 新 RPC（0.1.2-rc.1）解锁的功能候选（2026-09-06 对照 `dsh-v0.1.2-rc.1` 源码复核）
 
-适配完成后（上一节），RC Remote 的消费面盘点：18 个下行事件已消费 12 个
-（catalog 6 个 + approval/question waterfall 2 个 + chatView 失效刷新 4 个，
-未消费的 6 个 `cordis/*` 见下）；已注册 session
-projection 已消费 10 个（goal、todos、tokenUsage、contextPressure、title、
-sessionStats、permissions、imageLimits、plan、subagentTiming），且
+适配完成后（上一节），RC Remote 的消费面盘点：18 个下行事件已消费 16 个
+（catalog 6 个 + approval/question waterfall 2 个 + chatView 失效刷新 4 个 +
+dynamic 插件刷新 4 个，未消费的 2 个 `cordis/inspect-*` 见下）；已注册 session
+projection 已消费 14 个 key（goal、todos、tokenUsage、contextPressure、
+contextBreakdown、title、sessionStats、permissions、imageLimits、plan、
+subagentTiming、modelSelection、turnOutline、schedule）；且
 `GenericProjectionStore` 本就缓存全部 projection —— 以下多数条目是**纯呈现层
-工作**，不动传输。按性价比排序：
+工作**，不动传输。`pluginInventory/list` 已由 Runtime 严格校验并在设置面板
+按全局 Loader 与 Agent preset 组合分组展示；剩余候选按性价比排序：
 
-- [ ] **占用归因（`contextBreakdown`）**：`{systemTokens, toolsTokens, messageTokens, claim?}`
-      （`dsh-v0.1.2-rc.1:packages/llm/token-meter/src/breakdown-projection.ts:59`）。
-      正好补全上方「上下文用量与超限反馈补全」缺的一半：在统计面板里把
-      上下文占用拆成 system / tools / messages 三段。零新请求。
-- [ ] **跨会话引用 `@session`**：`sessionReferenceResolver/candidates`（`{agentId, query}`）返回
-      `{sessionId, label, cwd, sameWorkspace, createdAt, mention}`，`mention` 是规范
-      `@[label](dsh-session:…)` 串（`dsh-v0.1.2-rc.1:packages/context/session-reference/src/index.ts:250`）。
-      宿主在 agent pre-step 自动把引用会话做成有预算、有 provenance（capturedThroughSeq /
-      compacted / omitted 计数）、声明 untrusted 的只读快照（:130-160）。IDE 侧只做三件事：
-      Composer `@` 候选拉取、mention 插入草稿、消息流展示引用来源徽标。这是新 RPC 里感知价值最高的一项。
-- [ ] **服务端文件/目录 `@` 候选**：`fileReferences/list`（`{agentId, query}`，`dsh-v0.1.2-rc.1:packages/api/session-controller/src/file-references.ts:32`）
-      返回 Agent 工作目录下确定性的路径候选（含目录）。与现有本地 VS Code 候选互补：
-      服务端候选与 Agent 实际 cwd 对齐（远程工作区/容器场景下本地路径根本不对），
-      也部分解锁上方「扩展 @ 引用类型」的目录项。
-- [ ] **对话大纲投影（`turnOutline`）**：`{turns: [{turn, seq, prompt, response}], draft}`
-      （`dsh-v0.1.2-rc.1:packages/session/session-turn-outline/src/projection.ts:86`）。
-      上游特意为「翻页窗口之外的 turn」提供宿主权威大纲——现有 conversationNavigation
-      TreeView 只能看本地已加载范围，对齐后大纲在长会话翻页时不缺行。
-- [ ] **定时提醒只读面板（`schedule`）**：active reminders `{prompt, afterSeconds|everySeconds, scheduledAt}`
-      （`dsh-v0.1.2-rc.1:packages/schedule/schedule/src/projection.ts:70`）。创建只在
-      agent 侧 tools（`schedule/src/tools.ts`），IDE 只读展示 + 失效重拉，不做伪造创建入口。
-- [ ] **会话模型选择实时投影（`modelSelection`）**（`dsh-v0.1.2-rc.1:packages/api/session-controller/src/model-selection-projection.ts:59`）：
-      模型被别处（Web UI、agent）切换时状态条即时跟上，代替现在只在发送前拉 catalog。
-- [ ] **插件库存只读视图（`pluginInventory`）**：`pluginInventory/list` → `{entries: [{entryId, moduleName, enabled, fiberPhase}], agentPresets: [{id, trust, name, isDefault, rows: [{moduleName, enabled, fiberPhase, condition}]}]}`
-      （`dsh-v0.1.2-rc.1:packages/host/plugin-inventory/src/index.ts:65`、`types.ts`）。
-      Loader 条目与每个 preset 的插件组合 + Fiber 生命周期相位（`failed` 可见）。
-      可做设置页「插件与组合」标签或 Agent Preset 详情扩展；注意 MCP server 状态
-      仍无契约，下方「明确不做」的 MCP 条目不变。
-- [ ] **动态插件面板（`dynamic`，进阶）**：cordis-host-runner 暴露 `undefineFromPanel`、`run`、
-      `runHostHalf`、`getClientCode`、`resolveRequestRun`（`dsh-v0.1.2-rc.1:packages/extensions/cordis-host-runner/src/index.ts:226,248,324,383,412`），
-      配套 6 个未消费的 `cordis/*` 下行事件。最小可行：只读状态 + 移除 + `cordis/request-run`
-      审批联动；`getClientCode` 渲染动态插件 client half 属独立大项，暂不做。
-- [ ] **远程工作区支持评估**（激活上方 P1「Runtime 可靠性」的搁置项）：`directoryPicker/*`、
-      `fileReferences/list`、`session/canOpenWorkspacePath|openWorkspacePath` 本轮已全部迁移，
-      Runtime 侧文件浏览/打开的 RPC 解法就位，剩验证 Remote SSH/WSL/Dev Container 下
-      Extension Host 与 Runtime 同侧性的实机评估。
+- [x] **动态插件面板（`dynamic`，进阶，Host 侧）**：已消费
+      `dynamicCordisRunner/inventory`、`stopFromPanel`、`undefineFromPanel` 与
+      `resolveRequestRun`（拒绝待批准请求），并在 Activity Dock 展示按会话归属的只读状态、
+      package/Host half/Client half、等待服务和失败诊断。6 个 `cordis/*` 下行事件会触发
+      重新读取；`cordis/request-run` 显示待批准提示并可跳转 dsh Web UI。扩展不执行不可信的
+      `getClientCode`，也不在 Extension Host 内模拟 Client half；浏览器侧运行与批准仍由
+      Harness Web UI 负责。
+- [ ] **远程工作区支持评估（暂只做测试）**（激活上方 P1「Runtime 可靠性」的搁置项）：`dshRuntime` 已有
+      `directoryPicker/*`、`session/canOpenWorkspacePath|openWorkspacePath` wrapper；
+      `fileReferences/list` 已接入 Composer，缺失时回退本地候选。Runtime 侧文件浏览/打开的协议解法基本就位，
+      但 picker 尚未接入远程工作区专用 UI；剩验证 Remote SSH/WSL/Dev Container 下 Extension Host
+      与 Runtime 同侧性的实机评估。
 
 附注（证据与边界）：
 
@@ -141,19 +158,33 @@ sessionStats、permissions、imageLimits、plan、subagentTiming），且
 - [ ] **Session 内容查询**：`deepseek-harness/packages/session-query` 下 `@Remote` 计数为 0；`session.search` 已消费（rc.1 起为公开 remote，但部署可禁用索引），服务端全文检索管理面无公开入口。
 - [ ] **自动标题状态**：`deepseek-harness/packages/session/session-title` 下 `@Remote` 计数为 0；`title` projection 已消费，但生成状态与失败降级无公开契约。
 
+## P1：待评估候选
+
+以下候选优先复用现有 RC Remote 和 VS Code 稳定 API，不把未公开的实现
+当成 DSH 契约：
+
+- [ ] **`@diagnostics`**：附加用户主动选择的诊断项与范围，不默认把全工作区诊断送入 prompt。
+- [x] **Prompt 模板**：发现 `.dsh/prompts` 下的本地 Markdown，只做可见预填，发送前由用户确认。
+      实现：`src/promptTemplates.ts` 只读发现（`.dsh/prompts/**/*.md`，限 100 个文件/4 层深/32 KiB，frontmatter `title` 或首个 `#` 标题作展示名，路径经 `..`/绝对路径校验）；入口为 Composer `/template` slash 命令与命令面板 `DSH: Insert Prompt Template`；选中后整篇成为输入框草稿（`setComposerText`），发送仍由用户手动完成。不做：自动注入、隐式记忆、规则文件作为上下文附件（后者见上方 P1 条目）。
+- [ ] **Runtime 连接模式与生命周期可见性**：补 `attach-only`/`auto` 等状态表达，不改变外部 Runtime 只复用、不接管的规则。
+- [ ] **轻量代码库搜索**：先复用 VS Code 文件/符号能力，用户选中结果后再附加；向量索引暂不默认开启。
+
 ## P1：Runtime 可靠性
 
 - [ ] **跨平台 Runtime CI**：在 Windows、macOS、Linux 验证命令发现、启动、动态端口、健康检查、停止和进程树清理。
 - [ ] **GUI 启动 PATH 发现**：覆盖 macOS Finder/Dock、Linux Desktop 和 Windows npm 全局 bin 路径缺失场景，日志中说明最终使用的可执行文件。
-- [ ] **多根工作区 Runtime 归属**：根据活动编辑器选择 cwd，明确每个 session 对应的 workspace folder，切换时不误停其他窗口复用的 Runtime。
-- [ ] **远程工作区支持评估**：验证 Remote SSH、WSL、Dev Container 下 Extension Host、Runtime 和文件系统是否位于同侧；需要时使用 VS Code 端口转发。
-      此场景下 `host.pickDirectory` / `listDirectory` / `createDirectory` / `openPath` 四条未消费 RPC 是现成解法 —— 本地场景与 VS Code 原生 API 重复，仅远程场景值得接。
-- [ ] **异常退出恢复**：检测扩展启动的 Runtime 意外退出，提供有限次数的退避重启，并避免接管或终止用户自行启动的实例。
+- [x] **多根工作区 Runtime 归属（契约边界已核对）**：DSH 的一个 Session 只有一个 `cwd`，DirectoryPicker 也只暴露一条 ancestry chain；因此不把 VS Code multi-root workspace 映射成一个 DSH Session。多个根目录应分别建立 DSH Workspace/Session，IDE 当前沿用第一个 VS Code workspace folder，并在文档中明确这一限制（上游证据：`deepseek-harness/packages/host/directory-picker/README.md`、`packages/api/session-controller/src/types.ts`）。
+- [ ] **远程工作区矩阵验收（仅测试）**：验证 Remote SSH、WSL、Dev Container 下 Extension Host、Runtime 和文件系统是否位于同侧；需要时使用 VS Code 端口转发，不把测试结果包装成已支持功能。
+      文件位置点击现已在本地边界检查失败时回落到 `session/openWorkspacePath`；剩余
+      `directoryPicker/pick` / `directoryPicker/list` / `directoryPicker/createDirectory` 三条目录选择 RPC
+      尚未接入专用 picker。需在 Remote SSH/WSL/Dev Container 实机确认 Extension Host、
+      Runtime 与文件系统同侧性后，再决定是否增加远程目录浏览 UI（本地场景与 VS Code 原生 API 重复）。
+- [x] **异常退出恢复**：已检测扩展启动的 Runtime 意外退出，并按 1s/5s/15s 提供最多三次退避重启；手动生命周期操作会取消恢复，外部 Runtime 只复用、不接管。跨平台/真实进程树仍归入下方验收项。
 - [ ] **rc2 兼容性回归**：验证 V4 Vision、Files API 图片复用、Windows PTY 与沙箱修复；不新增单元测试，使用现有检查与手动 smoke 流程。
 
 ## P1：重构
 
-- [ ] **继续拆 `chatView.ts`**。已完成第一步：Workspace 与 Agent Preset 管理迁出（3169 → 2820 行）。剩余按性价比：三套目录缓存（model / skill / command 是同一套 Map 对 + 请求去重 + 失效重拉抄了三遍，可收成一个 `SessionCatalogCache<T>`，约 155 行 + 6 个字段）；`handleMessage` 的 205 行 switch 拆成按域分组的处理器表；Subagent 编排（约 285 行，`SubagentTreeStore` 已存在，预览/跟进/中断仍在视图里）。`postState` 的 193 行不建议动——它本质是把二十多个来源汇成一个快照，拆开只会变成到处找字段。
+- [ ] **继续拆 `chatView.ts`**。已完成第一步：Workspace 与 Agent Preset 管理迁出（3169 → 2820 行）；目录缓存已收拢为 `sessionCatalogCache.ts`（见「结构」）；Subagent 编排已迁出为 `subagentController.ts`（见「结构」）。剩余按性价比：`handleMessage` 的 205 行 switch 拆成按域分组的处理器表。`postState` 的 193 行不建议动——它本质是把二十多个来源汇成一个快照，拆开只会变成到处找字段。
 动手前先读两条硬约束，它们决定了哪些改法可行：
 
 1. **`test/` 下 13 个 `node:test` 文件 `require("../dist/<module>.js")`**，钉住的是**编译产物的模块路径与具名导出**：`chatState`、`chatViewProtocol`、`deepseekBalance`、`harnessClient`、`harnessConnection`、`hostState`、`safeMarkdown`、`sessionCatalog`、`sessionFeatures`、`sessionStore`、`traceProjector`、`traceProtocol`。`npm test` 是发版门禁（`.github/workflows/release.yml`），移动或改名会在发版时才炸。且 `AGENTS.md` 禁止新增测试 —— 重构不能靠补测试买安全，必须构造上行为等价。
@@ -163,13 +194,8 @@ sessionStats、permissions、imageLimits、plan、subagentTiming），且
 
 ### 结构
 
-- [x] **`src/tracePanel.ts` 的 425 行内联 UI**（已完成，966 → 611 行）。样式 → `webview/src/trace/trace.css`（115 行），客户端脚本 → `webview/src/trace/main.ts`（407 行），均由 esbuild 构建到 `webview/dist/`，宿主用 `asWebviewUri` 以外部 `<link>` / `<script src>` 加载。`traceHtml` 425 → 90 行，其中已无 `<style>` 块、无内联脚本体。
-      分四步落地，每步单独提交、单独验证：打通资源管线（CSS）→ 命名 wire 契约 → 契约移入 vscode-free 的 `traceProtocol` → 移植脚本。文案与 `sessionId` 改由 `<script type="application/json">` 数据块传递，本地化仍属宿主。
-      **迁移中发现并修掉一个既存缺陷**：树缩进用 `style="padding-left"` 属性，而 `style-src` 不含（也不该含）`'unsafe-inline'`，属性被剥掉、缩进从来不生效。已改用 `.depth-0…8` 类，与同文件 timeline 条形图当初的修法一致。
-      `escapeHtml` 在 JS 字符串里的第四份副本随之消失，全仓库现在只有 `fileLocations.ts` 一处定义。
-      **仍需人工验证**：Trace 面板无测试覆盖，我无法目视确认。请在 VS Code 里打开一个会话的 Trace，检查筛选、翻页、行选中/折叠、timeline 点击、projection 选中、Summary/Raw 切换、文件路径跳转，以及树缩进现在是否真的可见。
-- [ ] **`src/chatView.ts` God Object 继续拆**（3582 → 3103 行，已抽出 6 块）。
-      已完成：Provider 管理 → `providerManagement.ts`（224 行，以 `ProviderManagementDeps` 注入依赖而非反向依赖 ChatViewProvider）；代码块动作 → `codeBlockActions.ts`（111 行，接缝按 `text` 而非 `renderId` 划，因为可复制文本的缓存与 markdown 渲染共享）；markdown 渲染与代码 payload → `markdownRenderCache.ts`（类，按 `GoalMutationGate` 先例）；设置值转换 → `chatViewPresentation.settingsMutationOps`；会话切换器行组装 → `sessionCatalog.presentSessionRows`（接缝划在 `catalog` 上，两处派生一起搬）；`mutateGoal` 内重复五次的 ref 确认收成一处。
+- [ ] **`src/chatView.ts` God Object 继续拆**（3582 → 3103 行，已抽出 6 块；目录缓存与 Subagent 迁出后 3535 行）。
+      已完成：Provider 管理 → `providerManagement.ts`（224 行，以 `ProviderManagementDeps` 注入依赖而非反向依赖 ChatViewProvider）；代码块动作 → `codeBlockActions.ts`（111 行，接缝按 `text` 而非 `renderId` 划，因为可复制文本的缓存与 markdown 渲染共享）；markdown 渲染与代码 payload → `markdownRenderCache.ts`（类，按 `GoalMutationGate` 先例）；设置值转换 → `chatViewPresentation.settingsMutationOps`；会话切换器行组装 → `sessionCatalog.presentSessionRows`（接缝划在 `catalog` 上，两处派生一起搬）；`mutateGoal` 内重复五次的 ref 确认收成一处；三套目录缓存的并发骨架（value map + 请求去重 + 失效代际 + 重拉排队）→ `sessionCatalogCache.ts`（89 行，`pull` 承载 then/catch/finally 编排，apply/absent/fail 由调用方注入；skill 组原先缺 generations/refreshPending 字段，因无 invalidate 调用点，收拢后代际护栏零值恒真，行为不变）。
       **抽取标准（本轮验证有效，后续照用）**：候选必须不持有状态、不调 `postState`。按此标准复核的结果 —— Workspace 组的 `pendingNewSessionWorkspace*` 有 16 个读写点散在 `sendPrompt`/`postState`/`newSession`；Preset 组的 `agentPresetCatalog` 7 个点里只有 2 个在块内，`agentPresetDocuments` 更在构造函数里注册为 `TextDocumentContentProvider`；Subagent 组自己拥有 5 个字段，本质是 store+controller。这三组直接抽出只是把耦合从文件内搬到文件间，**须连状态一起搬**才有意义，属更大的设计改动。
       剩余易做项：`chooseWorkspaceAction`(42 行) 与 `chooseAgentPresetAction`(46 行) 完全不碰 `this`，但它们是上述两个域的「动作菜单」那一半，宜与各自域一同搬迁，不要先按机制凑进一个桶。
 - [ ] **`src/sessionFeatures.ts:414-421` 反向依赖**。顶层 feature 模块内 `new HarnessSessionStore()` + `rebaseline()` + `projectChatMessages()`，使其同时依赖下面两层，也让 `test/sessionFeatures.test.js` 顺带钉住了 `projectChatMessages` 的输出形状。该模块另含五个互不相关的 feature（plan review、goal、subagent、history、jobs），10 个钉住导出全在此处 —— 拆分需同步改测试，先评估收益。
@@ -183,19 +209,9 @@ sessionStats、permissions、imageLimits、plan、subagentTiming），且
 - [ ] `src/traceProjector.ts:745-929` `projectSessionTrace` 185 行 / 8 职责，含深度 5 的 fallthrough 发射循环。（`genericRow` 的两个死形参与随之失效的 `turnStarts` 索引已删除。）
 - [ ] `src/tracePanel.ts` `publish()` 约 120 行 / 7 职责，几何计算与面板消息发送混在一起。（其 payload 现已有 `TracePanelState` 契约，拆解时可直接按字段分组。）
 
-### 去重
-
-- [x] **`isRecord` 14 份副本**：`traceProtocol`、`chatState`、`sessionFeatures`、`sessionCatalog`、`tokenUsage`、`deepseekBalance`、`conversationNavigation`、`traceProjector`、`sessionStore`、`harnessClient`、`chatViewProtocol`、`changeReviewStore`、`hostState`，加 `chatViewPresentation` 里叫 `record` 的同一实现。
-- [x] **`escapeHtml` 4 份**：`safeMarkdown.ts:62`、`fileLocations.ts:28`（逐字节相同）、`tracePanel.ts:60`、`tracePanel.ts:736`（JS 字符串内）。已收拢到 `fileLocations.ts`（vscode-free、未被钉住、本就拥有使用它的渲染函数）。`tracePanel.ts` 内 JS 模板字符串那份仍在——它是客户端代码、无法 import，随下面的内联 UI 迁移一并消失。
-- [x] **`IMAGE_MEDIA_TYPES` 3 份**：`chatViewProtocol.ts:104`、`chatViewPresentation.ts:223`、`chatState.ts:109`。
-- [x] **路径包含判定 2 份**：`changeReviewStore.ts:68` `inside()` 与 `workspaceNavigation.ts:7` `containsPath()`。已收拢到 `src/paths.ts`，并顺带修掉 `containsPath` 用 `startsWith("..")` 把 `..config` 之类合法目录误判为越界的假阴性。若要做按绝对路径反查 turn 的查询，复用它，不要加第三份 —— `GitContext.cwd` 已 `realpath` 归一（`changeReviewStore.ts:288`），新方法应显式复用该不变量。
-
 ### 一致性（非缺陷）
 
-- [x] **协议校验严格度不统一**。`parseChatViewAction` 25 个 block 里 14 个用 `hasOnly` 白名单、6 个用 `hasAny` 黑名单、5 个（`removeContext`:309、`switchSession`:343、`answerApproval`:403、`answerQuestion`:408、`updateQueue`:414）无额外 key 守卫。
-      **这不是逃逸路径** —— 这五处都重新构造只含已校验字段的新字面量，多余 key 到不了 Host。属一致性问题，值得统一，但不要当漏洞排期。`:157` 那句 "Strict trust boundary" 注释对这五处名不副实，一并修正。
 - ~~**`onDidChange` 返回类型不一**~~ **不予统一**：核对后发现这个分界与 vscode-free 划分完全重合。`sessionStore:718`/`sessionCatalog:106` 返回 `() => void` 是因为它们不 import vscode——改成 `vscode.Disposable` 会打断 CI 门禁；`contextStore:124`/`dshRuntime:729` 本就 import vscode 且返回值直接进 disposables 数组。消费方已正确桥接（`chatView.ts:420-421` 包装、`tracePanel.ts:263-264` 直接调用）。已把这条隐含规则写进两处 doc comment。
-- [x] **ARIA 声明强于实现**：`webview/src/components/Header.tsx:245` 与 `Composer.tsx:300` 声明 `role="menu"`/`menuitem`，但只支持 Tab 遍历与 Escape，无方向键与 roving tabindex；同仓库 `dock/ActivityDock.tsx:77-88` 的 tablist 做全了。建议摘掉 role 当普通按钮列表（Tab 遍历此时语义正确，零新增代码），而非为满足声明补一套无人要求的交互。
 
 ### 明确不动
 
@@ -206,6 +222,13 @@ sessionStats、permissions、imageLimits、plan、subagentTiming），且
 
 ## P2：产品呈现
 
+- [ ] **原生 Chat Session provider 评估**：以 proposed API 做隔离 spike，与现有 `@dsh` Chat Participant/Webview 保持单一 Session 来源。
+- [ ] **编辑器 Tab 聊天入口评估**：参考其他 DSH 扩展的多入口形态，先验证 Session deep-link 和状态复用，避免维护第二套聊天状态。
+- [ ] **Plugin Center 安全 spike**：只在 Host 侧调用官方 `dsh plugin`，加入来源/兼容性/权限告知、显式确认、重启和回滚；不在 Webview 执行第三方代码。
+- [ ] **调试器控制安全 spike**：在现有暂停态上下文之上评估启动、断点、单步和变量读取；每个动作需白名单、确认、取消和超时。
+- [ ] **Session 导入/导出评估**：等待 DSH 导出格式稳定后再做显式文件选择，不复制第二套 Session 数据库。
+- [ ] **Inline completion / Ghost text 评估**：需要独立的模型路由、节流、取消、隐私和计费语义，暂不由 RC1 直接解锁。
+- [ ] **本地检查点设计**：先定义未跟踪文件、未保存编辑、并发修改、清理和存储上限，再评估 shadow snapshot；现有原生 diff 不等于完整回滚。
 - [ ] **Marketplace 截图与短 GIF**：展示流式回答、工具卡片、审批、计划评审、Activity Dock、Slash Commands 和 Trace 跳转。
 - [ ] **兼容版本说明**：记录验证过的 DSH 版本范围和协议变化，遇到不兼容版本时给出可操作提示。
 - [ ] **常见问题与故障排查**：覆盖找不到 dsh、API Key、空白 Webview、端口冲突、模型不可路由和远程工作区路径问题。
@@ -219,6 +242,7 @@ sessionStats、permissions、imageLimits、plan、subagentTiming），且
 - ~~**MCP 工具来源**：展示 MCP server、工具来源、连接状态和错误。~~ 本轮复核 `deepseek-harness/packages/mcp` 无 `@Remote`、无 `mcp.*` unary 路由，仍无 server 列表或连接状态契约。
 - ~~**Terminal / PTY context**：终端选区 `@` 引用、PTY 输出摘要和 persistent bash 状态。~~ 本轮复核无 `terminal.*` / `shell.*` unary 路由；VS Code 稳定 API 也不提供终端选区或既有 scrollback 读取。
 - **workspace symbol `@` 候选**：公开协议未提供 workspace symbols 查询。
+- **VS Code multi-root Session**：DSH Workspace 可以有多个独立 Workspace，Session 也可分散在这些 Workspace 中；但公开 Session/DirectoryPicker 契约没有一个 Session 绑定多个根目录的表示。不要为此自建多根协议或误报“已支持”。
 
 ## 明确不照搬
 

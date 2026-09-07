@@ -7,12 +7,12 @@
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "https://github.com/HarcoChen/deepseek-harness-vscode.git"
+        "url": "https://github.com/HarcoChen/dsh-vsc-integration.git"
     },
     "bugs": {
-        "url": "https://github.com/HarcoChen/deepseek-harness-vscode/issues"
+        "url": "https://github.com/HarcoChen/dsh-vsc-integration/issues"
     },
-    "homepage": "https://github.com/HarcoChen/deepseek-harness-vscode#readme",
+    "homepage": "https://github.com/HarcoChen/dsh-vsc-integration#readme",
     "icon": "resources/dsh.png",
     "galleryBanner": {
         "color": "#0F172A",
@@ -286,6 +286,11 @@
                 "title": "%command.openIdeContextPicker.title%",
                 "category": "DSH",
                 "icon": "$(settings)"
+            },
+            {
+                "command": "dsh.insertPromptTemplate",
+                "title": "%command.insertPromptTemplate.title%",
+                "category": "DSH"
             },
             {
                 "command": "dsh.captureAppShot",

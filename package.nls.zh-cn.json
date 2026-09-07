@@ -23,6 +23,7 @@
     "command.askAboutResource.title": "询问此资源",
     "command.explainDebugState.title": "解释当前调试状态",
     "command.openIdeContextPicker.title": "管理 IDE 上下文（/ide）",
+    "command.insertPromptTemplate.title": "插入 Prompt 模板（/template）",
     "command.captureAppShot.title": "截取 AppShot",
     "command.configureApiKey.title": "配置 API Key",
     "command.manageProviders.title": "管理提供商",

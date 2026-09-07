@@ -37,8 +37,15 @@ import {
     DshAgentPresetOpenResult,
     DshAgentPresetReadResult,
     DshAgentPresetSelectResult,
+    DshDynamicPluginRemoveResult,
+    DshDynamicPluginResolveResult,
+    DshDynamicPluginRow,
+    DshDynamicPluginStopResult,
+    DshPluginInventorySnapshot,
     DshSessionRenameResult,
     DshSessionSearchResult,
+    DshFileReferenceCandidate,
+    DshSessionReferenceCandidate,
     DshSkillEntry,
     DshSkillListResult,
     DshProviderListResult,
@@ -66,6 +73,18 @@ import {
     HarnessQueueAction,
     RuntimeStatus,
 } from "./types";
+import {
+    normalizeFileReferenceCandidates,
+    normalizeSessionReferenceCandidates,
+} from "./referenceCandidates";
+import { normalizeModelSelectionProjection } from "./modelSelection";
+import {
+    normalizeDynamicPluginInventory,
+    normalizeDynamicPluginRemoveResult,
+    normalizeDynamicPluginResolveResult,
+    normalizeDynamicPluginStopResult,
+} from "./dynamicPlugins";
+import { normalizePluginInventory } from "./pluginInventory";
 
 type RuntimeListener = (status: RuntimeStatus) => void;
 type HarnessConnectedListener = () => void;
@@ -77,6 +96,8 @@ const DEFAULT_PACKAGE_MANAGER_FETCH_TIMEOUT_MS = 30_000;
 const DEFAULT_NPM_REGISTRY = "https://registry.npmmirror.com";
 const OFFICIAL_NPM_REGISTRY = "https://registry.npmjs.org";
 const NPM_REGISTRY_QUERY_TIMEOUT_MS = 5_000;
+/** Bounded recovery delays for a Runtime launched by this extension. */
+const RUNTIME_RECOVERY_DELAYS_MS = [1_000, 5_000, 15_000] as const;
 type PackageManager = "npx" | "pnpm";
 /**
  * The start lock every dsh editor integration shares, so one Runtime serves the
@@ -963,6 +984,10 @@ export class DshRuntime implements vscode.Disposable {
     private disposed = false;
     private status: RuntimeStatus = { state: "stopped" };
     private hostDescription: HarnessHostDescription | undefined;
+    private runtimeRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
+    private runtimeRecoveryAttempts = 0;
+    private runtimeRecoveryGeneration = 0;
+    private runtimeRecoveryInFlight = false;
 
     public constructor(
         private readonly output: vscode.OutputChannel,
@@ -1162,6 +1187,7 @@ export class DshRuntime implements vscode.Disposable {
             `Runtime status: ${this.status.state}`,
             `Runtime URL: ${this.baseUrl ? redactUrl(this.baseUrl) : "<none>"}`,
             `Runtime health: ${health}`,
+            `Runtime recovery attempts: ${this.runtimeRecoveryAttempts}/${RUNTIME_RECOVERY_DELAYS_MS.length}; pending: ${this.runtimeRecoveryTimer !== undefined || this.runtimeRecoveryInFlight ? "yes" : "no"}`,
             `Remote RPC probe: ${rpcHealth}`,
             `Remote protocol: RC Remote v1 (generation ${this.remoteConnection.currentGeneration || "<none>"})`,
             `Configured Runtime version: ${runtimeVersion}`,
@@ -1190,9 +1216,20 @@ export class DshRuntime implements vscode.Disposable {
     }
 
     public async start(workspaceRoot?: string): Promise<string> {
+        return this.startWithRecovery(workspaceRoot, false);
+    }
+
+    /**
+     * Start the Runtime, optionally preserving the recovery budget for an
+     * automatic retry. A user-triggered start cancels a pending retry so it
+     * cannot race the explicit action.
+     */
+    private async startWithRecovery(workspaceRoot: string | undefined, fromRecovery: boolean): Promise<string> {
         if (this.disposed) {
             throw new Error(t("The dsh-ide runtime has already been disposed."));
         }
+
+        if (!fromRecovery) this.cancelRuntimeRecovery();
 
         if (this.startPromise) {
             return this.startPromise;
@@ -1212,6 +1249,7 @@ export class DshRuntime implements vscode.Disposable {
     }
 
     public async stop(): Promise<void> {
+        this.cancelRuntimeRecovery();
         await this.harnessState.stop();
         this.subagentHistoryCursors.clear();
         const child = this.child;
@@ -1297,6 +1335,58 @@ export class DshRuntime implements vscode.Disposable {
         return this.apiClient.call("session/search", { request: { query } }, signal);
     }
 
+    /** Resolve Runtime-owned files and directories for the active Composer @ menu. */
+    public async listFileReferences(
+        sessionId: string,
+        query: string,
+        signal?: AbortSignal,
+    ): Promise<DshFileReferenceCandidate[] | undefined> {
+        try {
+            const value = await this.apiClient.call("fileReferences/list", {
+                agentId: sessionId,
+                query,
+            }, signal);
+            const candidates = normalizeFileReferenceCandidates(value);
+            if (!candidates) {
+                throw new RemoteProtocolError(
+                    "Remote fileReferences/list returned an invalid candidate list",
+                );
+            }
+            return candidates;
+        } catch (error) {
+            // RC1 clients can connect to an older Runtime that has no file
+            // reference provider. The Composer will use its local index then.
+            if (error instanceof RemoteHttpError && error.status === 404) return undefined;
+            throw error;
+        }
+    }
+
+    /** Resolve canonical cross-session mentions for the active Composer @ menu. */
+    public async listSessionReferenceCandidates(
+        sessionId: string,
+        query: string,
+        signal?: AbortSignal,
+    ): Promise<DshSessionReferenceCandidate[] | undefined> {
+        try {
+            const value = await this.apiClient.call("sessionReferenceResolver/candidates", {
+                agentId: sessionId,
+                query,
+            }, signal);
+            const candidates = normalizeSessionReferenceCandidates(value);
+            if (!candidates) {
+                throw new RemoteProtocolError(
+                    "Remote sessionReferenceResolver/candidates returned an invalid candidate list",
+                );
+            }
+            return candidates;
+        } catch (error) {
+            // Keep older Runtime versions useful by retaining the local catalog
+            // and session/search fallback when the optional Remote is absent.
+            if (error instanceof RemoteHttpError && error.status === 404) return undefined;
+            throw error;
+        }
+    }
+
     public async renameSession(
         sessionId: string,
         title: string,
@@ -1359,13 +1449,23 @@ export class DshRuntime implements vscode.Disposable {
     }
 
     /** Report whether the composed Runtime can open a Session workspace path. */
-    public canOpenWorkspacePath(signal?: AbortSignal): Promise<boolean> {
-        return this.apiClient.call("session/canOpenWorkspacePath", {}, signal);
+    public async canOpenWorkspacePath(signal?: AbortSignal): Promise<boolean> {
+        const value = await this.apiClient.call<unknown>("session/canOpenWorkspacePath", {}, signal);
+        if (typeof value !== "boolean") {
+            throw new RemoteProtocolError("Remote session/canOpenWorkspacePath returned an invalid value");
+        }
+        return value;
     }
 
     /** Open a Session-aware path through the Runtime's native opener. */
-    public openWorkspacePath(path: string, signal?: AbortSignal): Promise<{ opened: true }> {
-        return this.apiClient.call("session/openWorkspacePath", { request: { path } }, signal);
+    public async openWorkspacePath(path: string, signal?: AbortSignal): Promise<{ opened: true }> {
+        const value = await this.apiClient.call<unknown>("session/openWorkspacePath", {
+            request: { path },
+        }, signal);
+        if (!isRemoteRecord(value) || value.opened !== true) {
+            throw new RemoteProtocolError("Remote session/openWorkspacePath returned an invalid value");
+        }
+        return { opened: true };
     }
 
     /** Pick a directory when the Runtime composes a native picker capability. */
@@ -1444,12 +1544,10 @@ export class DshRuntime implements vscode.Disposable {
             groups: DshSessionModelsResult["groups"];
             failures: DshSessionModelsResult["failures"];
         }>("session/modelCatalog", {});
-        const selected = this.harnessState.sessions.get(sessionId)?.projections
-            .find((cell) => cell.key === "modelSelection")?.value;
-        const selection = selected && typeof selected === "object" && selected !== null
-            ? ((selected as { next?: typeof catalog.default; lastUsed?: typeof catalog.default }).next ??
-                (selected as { lastUsed?: typeof catalog.default }).lastUsed)
-            : undefined;
+        const selection = normalizeModelSelectionProjection(
+            this.harnessState.sessions.get(sessionId)?.projections
+                .find((cell) => cell.key === "modelSelection")?.value,
+        );
         const current = selection ?? catalog.default;
         return {
             current,
@@ -1475,6 +1573,90 @@ export class DshRuntime implements vscode.Disposable {
             authorable: result.authorable === true,
             hasDocument: result.hasDocument ?? result.authorable === true,
         };
+    }
+
+    public async pluginInventory(): Promise<DshPluginInventorySnapshot> {
+        const value = await this.apiClient.call<unknown>("pluginInventory/list", {});
+        const inventory = normalizePluginInventory(value);
+        if (!inventory) {
+            throw new RemoteProtocolError("Remote pluginInventory/list returned an invalid value");
+        }
+        return inventory;
+    }
+
+    /** Reads the optional frame-wide dynamic Cordis plugin registry. */
+    public async dynamicPluginInventory(): Promise<DshDynamicPluginRow[] | undefined> {
+        try {
+            const value = await this.apiClient.call<unknown>("dynamicCordisRunner/inventory", {});
+            const rows = normalizeDynamicPluginInventory(value);
+            if (!rows) {
+                throw new RemoteProtocolError(
+                    "Remote dynamicCordisRunner/inventory returned an invalid value",
+                );
+            }
+            return rows;
+        } catch (error) {
+            // The dynamic runner is an optional composition. Older or minimal
+            // Runtimes simply do not mount this namespace.
+            if (error instanceof RemoteHttpError && error.status === 404) return undefined;
+            throw error;
+        }
+    }
+
+    public async stopDynamicPlugin(
+        sessionId: string,
+        pluginId: string,
+    ): Promise<DshDynamicPluginStopResult> {
+        const value = await this.apiClient.call<unknown>("dynamicCordisRunner/stopFromPanel", {
+            agentId: sessionId,
+            pluginId,
+        });
+        const result = normalizeDynamicPluginStopResult(value);
+        if (!result) {
+            throw new RemoteProtocolError(
+                "Remote dynamicCordisRunner/stopFromPanel returned an invalid value",
+            );
+        }
+        return result;
+    }
+
+    public async removeDynamicPlugin(
+        sessionId: string,
+        pluginId: string,
+    ): Promise<DshDynamicPluginRemoveResult> {
+        const value = await this.apiClient.call<unknown>("dynamicCordisRunner/undefineFromPanel", {
+            agentId: sessionId,
+            pluginId,
+        });
+        const result = normalizeDynamicPluginRemoveResult(value);
+        if (!result) {
+            throw new RemoteProtocolError(
+                "Remote dynamicCordisRunner/undefineFromPanel returned an invalid value",
+            );
+        }
+        return result;
+    }
+
+    /** Declines a pending browser Client activation without executing plugin code. */
+    public async declineDynamicPlugin(
+        requestId: string,
+        pluginRunId?: string,
+    ): Promise<DshDynamicPluginResolveResult> {
+        const value = await this.apiClient.call<unknown>("dynamicCordisRunner/resolveRequestRun", {
+            requestId,
+            resolution: {
+                ok: false,
+                reason: "rejected",
+                ...(pluginRunId === undefined ? {} : { pluginRunId }),
+            },
+        });
+        const result = normalizeDynamicPluginResolveResult(value);
+        if (!result) {
+            throw new RemoteProtocolError(
+                "Remote dynamicCordisRunner/resolveRequestRun returned an invalid value",
+            );
+        }
+        return result;
     }
 
     public async selectAgentPreset(sessionId: string, agentPreset: string): Promise<DshAgentPresetSelectResult> {
@@ -2119,11 +2301,20 @@ export class DshRuntime implements vscode.Disposable {
                 launchError = error;
                 exited = true;
             });
+            let ready = false;
             child.once("close", (code, signal) => {
                 exited = true;
                 this.output.appendLine(`[dsh] exited: code=${code ?? "null"}, signal=${signal ?? "null"}`);
+                const shouldRecover = ready &&
+                    this.child === child &&
+                    this.startedByExtension &&
+                    !this.disposed;
+                const recoveryGeneration = this.runtimeRecoveryGeneration;
                 if (this.child === child) {
                     this.child = undefined;
+                }
+                if (shouldRecover) {
+                    void this.handleUnexpectedRuntimeExit(workspaceRoot, code, signal, recoveryGeneration);
                 }
             });
 
@@ -2145,6 +2336,7 @@ export class DshRuntime implements vscode.Disposable {
                     () => launchError,
                     () => outputTail,
                 );
+                ready = true;
                 this.baseUrl = url;
                 try {
                     await this.publishRuntimeLockUrl({
@@ -2572,6 +2764,125 @@ export class DshRuntime implements vscode.Disposable {
         } finally {
             await unlink(lock.path).catch(() => undefined);
         }
+    }
+
+    /** Cancel automatic recovery when an explicit lifecycle action takes over. */
+    private cancelRuntimeRecovery(): void {
+        ++this.runtimeRecoveryGeneration;
+        if (this.runtimeRecoveryTimer !== undefined) {
+            clearTimeout(this.runtimeRecoveryTimer);
+            this.runtimeRecoveryTimer = undefined;
+        }
+        this.runtimeRecoveryInFlight = false;
+        this.runtimeRecoveryAttempts = 0;
+    }
+
+    /**
+     * Recover only an extension-owned child. The process lock is released
+     * before retrying, allowing another window to publish a healthy endpoint
+     * that this window can reuse instead of spawning a second Runtime.
+     */
+    private async handleUnexpectedRuntimeExit(
+        workspaceRoot: string | undefined,
+        code: number | null,
+        signal: NodeJS.Signals | null,
+        recoveryGeneration: number,
+    ): Promise<void> {
+        if (
+            this.disposed ||
+            this.runtimeRecoveryGeneration !== recoveryGeneration ||
+            !this.startedByExtension ||
+            this.child !== undefined
+        ) return;
+
+        this.output.appendLine(
+            `[dsh] extension-owned Runtime exited unexpectedly: code=${code ?? "null"}, signal=${signal ?? "null"}`,
+        );
+        this.baseUrl = undefined;
+        this.launchUrl = undefined;
+        this.authCookie = undefined;
+        this.authPromise = undefined;
+        this.hostDescription = undefined;
+        this.subagentHistoryCursors.clear();
+
+        try {
+            await this.harnessState.stop();
+        } catch (error) {
+            this.output.appendLine(`[dsh] failed to stop Remote state after Runtime exit: ${String(error)}`);
+        }
+
+        // A manual start/stop may have won while the Remote streams were
+        // shutting down. Never release its lock or change its ownership.
+        if (
+            this.disposed ||
+            this.runtimeRecoveryGeneration !== recoveryGeneration ||
+            this.child !== undefined ||
+            !this.startedByExtension
+        ) return;
+        await this.releaseRuntimeLock();
+        this.startedByExtension = false;
+        // A retry attempt may have been starting when this new child died.
+        // Let the exit schedule the next attempt; the old start promise will
+        // observe the generation change and cannot reset the budget.
+        this.runtimeRecoveryInFlight = false;
+        this.scheduleRuntimeRecovery(workspaceRoot);
+    }
+
+    /** Schedule one bounded, generation-guarded recovery attempt. */
+    private scheduleRuntimeRecovery(workspaceRoot: string | undefined): void {
+        if (this.disposed || this.runtimeRecoveryTimer !== undefined || this.runtimeRecoveryInFlight) return;
+        if (!workspaceRoot) {
+            const message = t("dsh web exited unexpectedly, but no workspace is available for recovery.");
+            this.setStatus({ state: "error", message });
+            return;
+        }
+
+        const maxAttempts = RUNTIME_RECOVERY_DELAYS_MS.length;
+        if (this.runtimeRecoveryAttempts >= maxAttempts) {
+            const message = t("dsh web exited unexpectedly after {attempts} recovery attempts. Run DSH: Restart dsh Web to try again.", {
+                attempts: maxAttempts,
+            });
+            this.setStatus({ state: "error", message });
+            this.output.appendLine(`[dsh] Runtime recovery exhausted after ${maxAttempts} attempts`);
+            return;
+        }
+
+        const attempt = ++this.runtimeRecoveryAttempts;
+        const delayMs = RUNTIME_RECOVERY_DELAYS_MS[attempt - 1];
+        const generation = ++this.runtimeRecoveryGeneration;
+        const seconds = Math.ceil(delayMs / 1_000);
+        this.output.appendLine(
+            `[dsh] scheduling Runtime recovery attempt ${attempt}/${maxAttempts} in ${seconds}s`,
+        );
+        this.setStatus({
+            state: "starting",
+            message: t("dsh web exited unexpectedly; retrying in {seconds}s (attempt {attempt} of {max}).", {
+                seconds,
+                attempt,
+                max: maxAttempts,
+            }),
+        });
+
+        this.runtimeRecoveryTimer = setTimeout(() => {
+            if (this.runtimeRecoveryGeneration !== generation || this.disposed) return;
+            this.runtimeRecoveryTimer = undefined;
+            this.runtimeRecoveryInFlight = true;
+            void this.startWithRecovery(workspaceRoot, true)
+                .then(() => {
+                    if (this.runtimeRecoveryGeneration === generation && this.status.state === "running") {
+                        this.runtimeRecoveryAttempts = 0;
+                    }
+                })
+                .catch((error: unknown) => {
+                    if (this.runtimeRecoveryGeneration !== generation || this.disposed) return;
+                    this.output.appendLine(`[dsh] Runtime recovery attempt ${attempt} failed: ${String(error)}`);
+                    this.runtimeRecoveryInFlight = false;
+                    this.scheduleRuntimeRecovery(workspaceRoot);
+                })
+                .finally(() => {
+                    if (this.runtimeRecoveryGeneration === generation) this.runtimeRecoveryInFlight = false;
+                });
+        }, delayMs);
     }
 
     private async terminate(child: ChildProcess): Promise<void> {

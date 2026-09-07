@@ -22,6 +22,11 @@ export type ChatViewAction =
     | { type: "configureApiKey" }
     | { type: "manageProviders" }
     | { type: "manageSettings" }
+    | { type: "refreshPluginInventory" }
+    | { type: "refreshDynamicPlugins" }
+    | { type: "stopDynamicPlugin"; sessionId: string; pluginId: string }
+    | { type: "removeDynamicPlugin"; sessionId: string; pluginId: string }
+    | { type: "declineDynamicPlugin"; requestId: string; pluginId: string }
     | { type: "openSettingsDocument" }
     | {
           type: "mutateSettings";
@@ -33,10 +38,11 @@ export type ChatViewAction =
     | { type: "manageWorkspaces" }
     | { type: "openIdeContextPicker" }
     | { type: "openTerminalCommandPicker" }
+    | { type: "openPromptTemplatePicker" }
     | { type: "captureAppShot" }
     | { type: "removeContext"; id: string }
     | { type: "loadImage"; attachmentId: string }
-    | { type: "fileReferenceQuery"; query: string }
+    | { type: "fileReferenceQuery"; query: string; quoted?: boolean }
     | { type: "toggleSelection" }
     | { type: "start" }
     | { type: "stop" }
@@ -219,6 +225,45 @@ export function parseChatViewAction(value: unknown): ChatViewAction | undefined 
             return hasOnly(value, ["type", "protocol"])
                 ? { type: "manageAgentPresets" }
                 : undefined;
+        case "openPromptTemplatePicker":
+            return hasOnly(value, ["type", "protocol"])
+                ? { type: "openPromptTemplatePicker" }
+                : undefined;
+        case "refreshPluginInventory":
+            return hasOnly(value, ["type", "protocol"])
+                ? { type: "refreshPluginInventory" }
+                : undefined;
+        case "refreshDynamicPlugins":
+            return hasOnly(value, ["type", "protocol"])
+                ? { type: "refreshDynamicPlugins" }
+                : undefined;
+        case "stopDynamicPlugin":
+        case "removeDynamicPlugin":
+            if (
+                !hasOnly(value, ["type", "sessionId", "pluginId", "protocol"]) ||
+                !nonEmptyString(value.sessionId) ||
+                value.sessionId.length > 256 ||
+                !nonEmptyString(value.pluginId) ||
+                value.pluginId.length > 256
+            ) return undefined;
+            return {
+                type: value.type,
+                sessionId: value.sessionId,
+                pluginId: value.pluginId,
+            } as ChatViewAction;
+        case "declineDynamicPlugin":
+            if (
+                !hasOnly(value, ["type", "requestId", "pluginId", "protocol"]) ||
+                !nonEmptyString(value.requestId) ||
+                value.requestId.length > 256 ||
+                !nonEmptyString(value.pluginId) ||
+                value.pluginId.length > 256
+            ) return undefined;
+            return {
+                type: "declineDynamicPlugin",
+                requestId: value.requestId,
+                pluginId: value.pluginId,
+            };
         case "selectReasoningEffort":
             return hasOnly(value, ["type", "effort"]) &&
                 nonEmptyString(value.effort) &&
@@ -381,9 +426,17 @@ export function parseChatViewAction(value: unknown): ChatViewAction | undefined 
                 ? { type: "loadImage", attachmentId: value.attachmentId }
                 : undefined;
         case "fileReferenceQuery":
-            return hasOnly(value, ["type", "query"]) && typeof value.query === "string" && value.query.length <= 256
-                ? { type: "fileReferenceQuery", query: value.query }
-                : undefined;
+            if (
+                !hasOnly(value, ["type", "query", "quoted"]) ||
+                typeof value.query !== "string" ||
+                value.query.length > 256 ||
+                (value.quoted !== undefined && typeof value.quoted !== "boolean")
+            ) return undefined;
+            return {
+                type: "fileReferenceQuery",
+                query: value.query,
+                ...(value.quoted === undefined ? {} : { quoted: value.quoted }),
+            };
         case "mutateSettings": {
             if (
                 !hasOnly(value, ["type", "ns", "revision", "changes"]) ||

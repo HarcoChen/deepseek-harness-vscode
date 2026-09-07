@@ -156,17 +156,17 @@
 
 - 首个社区预览版本，提供 `dsh web` Runtime 集成、侧栏聊天和 IDE 上下文附加。
 
-[0.6.2]: https://github.com/HarcoChen/deepseek-harness-vscode/compare/v0.6.1...v0.6.2
-[0.6.1]: https://github.com/HarcoChen/deepseek-harness-vscode/compare/v0.6.0...v0.6.1
-[0.6.0]: https://github.com/HarcoChen/deepseek-harness-vscode/compare/v0.5.3...v0.6.0
-[0.5.3]: https://github.com/HarcoChen/deepseek-harness-vscode/compare/v0.5.2...v0.5.3
-[0.5.2]: https://github.com/HarcoChen/deepseek-harness-vscode/compare/v0.5.1...v0.5.2
-[0.4.1]: https://github.com/HarcoChen/deepseek-harness-vscode/compare/v0.4.0...v0.4.1
-[0.5.0]: https://github.com/HarcoChen/deepseek-harness-vscode/compare/v0.4.1...v0.5.0
-[0.5.1]: https://github.com/HarcoChen/deepseek-harness-vscode/compare/v0.5.0...v0.5.1
-[0.4.0]: https://github.com/HarcoChen/deepseek-harness-vscode/compare/v0.3.2...v0.4.0
-[0.3.2]: https://github.com/HarcoChen/deepseek-harness-vscode/compare/v0.3.0...v0.3.2
-[0.3.0]: https://github.com/HarcoChen/deepseek-harness-vscode/compare/v0.2.2...v0.3.0
-[0.2.2]: https://github.com/HarcoChen/deepseek-harness-vscode/compare/v0.2.1...v0.2.2
-[0.2.1]: https://github.com/HarcoChen/deepseek-harness-vscode/compare/v0.1.0-alpha...v0.2.1
-[0.1.0-alpha]: https://github.com/HarcoChen/deepseek-harness-vscode/releases/tag/v0.1.0-alpha
+[0.6.2]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.5.3...v0.6.0
+[0.5.3]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.5.2...v0.5.3
+[0.5.2]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.5.1...v0.5.2
+[0.4.1]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.4.0...v0.4.1
+[0.5.0]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.4.1...v0.5.0
+[0.5.1]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.5.0...v0.5.1
+[0.4.0]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.3.2...v0.4.0
+[0.3.2]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.3.0...v0.3.2
+[0.3.0]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.1.0-alpha...v0.2.1
+[0.1.0-alpha]: https://github.com/HarcoChen/dsh-vsc-integration/releases/tag/v0.1.0-alpha

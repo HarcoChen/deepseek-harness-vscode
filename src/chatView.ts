@@ -39,6 +39,10 @@ import {
 import { MarkdownRenderCache } from "./markdownRenderCache";
 import { samePath } from "./paths";
 import { presentSessionRows } from "./sessionCatalog";
+import { SessionCatalogCache } from "./sessionCatalogCache";
+import { listPromptTemplates, readPromptTemplate } from "./promptTemplates";
+import { MessageFeedbackController } from "./messageFeedbackController";
+import { SubagentController } from "./subagentController";
 import { projectionCell, projectionValue, type SessionStateSnapshot } from "./sessionStore";
 import { isRemoteError } from "./remote/errors";
 import { presentHostBaseline } from "./hostState";
@@ -52,6 +56,7 @@ import {
     presentSettingsPanel,
     settingsMutationOps,
     reasoningEffortOptions,
+    scheduleProjection,
     sessionStatsProjection,
     todoProjection,
 } from "./chatViewPresentation";
@@ -63,29 +68,22 @@ import {
     GoalMutationGate,
     type GoalMutationOperation,
     normalizeGoalRef,
-    normalizeSubagentCatalog,
-    normalizeSubagentTiming,
     parseGoalProjection,
     presentGoalHud,
     presentJobCenter,
     presentApprovalCall,
     presentPlanReview,
-    projectSubagentHistory,
-    SubagentTreeStore,
 } from "./sessionFeatures";
 import {
     ChatViewState,
     ChatImageView,
     ChatMessage,
     DshAgentPresetEntry,
-    DshHistoryEntry,
+    DshDynamicPluginPanelView,
     DshImageLimitsView,
     DshImageUpload,
-    DshMessageFeedbackDeleteRequest,
-    DshMessageFeedbackItem,
-    DshMessageFeedbackPutRequest,
-    DshMessageFeedbackRating,
-    DshMessageFeedbackStateView,
+    DshFileReferenceCandidate,
+    DshSessionReferenceCandidate,
     DshReferenceCandidate,
     DshReasoningEffortOption,
     DshSessionSearchItem,
@@ -97,36 +95,24 @@ import {
     DshSettingsNamespaceView,
     DshCommandDescriptor,
     DshSkillEntry,
-    DshSubagentAddress,
-    DshSubagentCatalog,
     DshTodoItemView,
     DshWorkspaceView,
     PermissionProjectionView,
     SessionStatsView,
-    SubagentHistoryPreview,
-    SubagentTimingView,
-    SubagentTreeNodeView,
 } from "./types";
 import { projectTokenUsage, SelectedModelSnapshot } from "./tokenUsage";
 import { openWorkspaceFileLocation } from "./workspaceNavigation";
 import { errorMessage } from "./errors";
+import { normalizeModelSelectionProjection, sameModelSelection } from "./modelSelection";
 import {
-    normalizeMessageFeedbackDeleteResult,
-    normalizeMessageFeedbackListResult,
-    normalizeMessageFeedbackPutResult,
-} from "./messageFeedback";
+    formatFileReferenceMention,
+    formatSessionReferenceMention,
+    referencePathPresentation,
+} from "./referenceCandidates";
 
 interface PersistedSession {
     sessionId: string;
     cwd: string;
-}
-
-interface MessageFeedbackSessionState {
-    status: "loading" | "ready" | "error" | "unavailable";
-    items: Map<string, DshMessageFeedbackItem>;
-    pending: Set<string>;
-    errors: Map<string, string>;
-    error?: string;
 }
 
 export type QuickTaskKind = "explain" | "fix" | "review" | "docs";
@@ -212,17 +198,6 @@ function referencesSelection(text: string): boolean {
     return /(^|\s)@selection(?=$|\s|[,.;:!?])/u.test(text);
 }
 
-function lowestEventSeq(entries: readonly DshHistoryEntry[]): number | undefined {
-    let lowest: number | undefined;
-    for (const entry of entries) {
-        const seq = entry.event.seq;
-        if (typeof seq === "number" && Number.isSafeInteger(seq) && seq >= 0) {
-            lowest = lowest === undefined ? seq : Math.min(lowest, seq);
-        }
-    }
-    return lowest;
-}
-
 function isCredentialIssue(error: unknown): boolean {
     const message = errorMessage(error).toLowerCase();
     return /missing[_ -]?credential|api[ _-]?key|\bauth\b|authentication|unauthori[sz]ed|\b401\b|credential.*(unset|missing|not configured)/u.test(
@@ -251,39 +226,6 @@ function positiveTurn(value: unknown): number | undefined {
 
 function isCheckpointMessageType(type: string): boolean {
     return type === "user/message" || type === "assistant/message";
-}
-
-/** Resolve the stable wire id of one finalized append-origin assistant message. */
-function assistantFeedbackMessageId(
-    snapshot: SessionStateSnapshot | undefined,
-    seq: number | undefined,
-): string | undefined {
-    if (!snapshot || seq === undefined || !Number.isSafeInteger(seq) || seq < 0) return undefined;
-    const stored = snapshot.events.find((candidate) => candidate.event.seq === seq);
-    if (!stored || stored.event.type !== "assistant/message" || stored.event.surfaceOp !== "append") {
-        return undefined;
-    }
-    if (!isRecord(stored.event.data) || !isRecord(stored.event.data.message)) return undefined;
-    const message = stored.event.data.message;
-    return message.role === "assistant" && typeof message.id === "string" && message.id.trim().length > 0
-        ? message.id
-        : undefined;
-}
-
-/** Check a feedback mutation against the current Session's authoritative log. */
-function hasAssistantFeedbackTarget(
-    snapshot: SessionStateSnapshot | undefined,
-    messageId: string,
-): boolean {
-    if (!snapshot || !messageId) return false;
-    return snapshot.events.some((stored) =>
-        stored.event.type === "assistant/message" &&
-        stored.event.surfaceOp === "append" &&
-        isRecord(stored.event.data) &&
-        isRecord(stored.event.data.message) &&
-        stored.event.data.message.id === messageId &&
-        stored.event.data.message.role === "assistant",
-    );
 }
 
 /** Resolve the turn containing a projected user/assistant message. */
@@ -318,11 +260,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private readonly optimisticPrompts: OptimisticPrompt[] = [];
     private readonly markdownRenders = new MarkdownRenderCache();
     private readonly goalMutations = new GoalMutationGate();
-    private readonly subagentTrees = new SubagentTreeStore();
-    private readonly subagentTreeAborts = new Map<string, AbortController>();
-    private subagentPreview: SubagentHistoryPreview | undefined;
-    private subagentPreviewAbort: AbortController | undefined;
-    private subagentPreviewGeneration = 0;
+    private readonly subagents: SubagentController;
     private sessionId: string | undefined;
     private sessionCwd: string | undefined;
     private newSessionDraft = false;
@@ -338,29 +276,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private focusMode = false;
     private fileReferenceCandidates: DshReferenceCandidate[] = [];
     private fileReferenceQueryGeneration = 0;
+    private fileReferenceQueryAbort: AbortController | undefined;
     private pendingComposerUpdate: { type: "insertText" | "setText"; text: string } | undefined;
     private readonly pendingComposerImages: DshImageUpload[] = [];
     private webviewReady = false;
     private restoringPersistedSession: Promise<void> | undefined;
     private stateUpdateTimer: ReturnType<typeof setTimeout> | undefined;
-    private subagentRefreshTimer: ReturnType<typeof setTimeout> | undefined;
     private readonly observedRunning = new Map<string, boolean>();
     private readonly completedWhileHidden = new Set<string>();
     private readonly selectedModels = new Map<string, SelectedModelSnapshot>();
-    private readonly modelCatalogs = new Map<string, DshSessionModelsResult>();
-    private readonly modelCatalogRequests = new Map<string, Promise<void>>();
-    private readonly modelCatalogGenerations = new Map<string, number>();
-    private readonly modelCatalogRefreshPending = new Set<string>();
-    private readonly skillCatalogs = new Map<string, DshSkillEntry[]>();
-    private readonly skillCatalogRequests = new Map<string, Promise<void>>();
-    private readonly commandCatalogs = new Map<string, DshCommandDescriptor[]>();
-    private readonly commandCatalogRequests = new Map<string, Promise<void>>();
-    private readonly commandCatalogGenerations = new Map<string, number>();
-    private readonly commandCatalogRefreshPending = new Set<string>();
-    private readonly messageFeedbackStates = new Map<string, MessageFeedbackSessionState>();
-    private readonly messageFeedbackRequests = new Map<string, Promise<void>>();
-    private readonly messageFeedbackGenerations = new Map<string, number>();
-    private readonly messageFeedbackOperationTails = new Map<string, Promise<void>>();
+    private readonly modelCatalogs = new SessionCatalogCache<DshSessionModelsResult>();
+    private readonly modelSelectionProjectionSeqs = new Map<string, number>();
+    private readonly skillCatalogs = new SessionCatalogCache<DshSkillEntry[]>();
+    private readonly commandCatalogs = new SessionCatalogCache<DshCommandDescriptor[]>();
+    private readonly messageFeedback: MessageFeedbackController;
     /**
      * Latched once the Runtime answers 404 for the command registry, so an
      * older Runtime is asked once per connection instead of on every state
@@ -377,6 +306,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private settingsPanel: DshSettingsPanelView | undefined;
     private readonly settingsNamespaces = new Map<string, DshSettingsNamespaceView>();
     private settingsPanelGeneration = 0;
+    private pluginInventoryGeneration = 0;
+    private dynamicPlugins: DshDynamicPluginPanelView | undefined;
+    private dynamicPluginsGeneration = 0;
     private readonly changeReviews: ChangeReviewStore;
     private readonly toolDiffs: ToolDiffStore;
     private agentStatusChoice: { sessionId: string; candidateKey: string; label: string } | undefined;
@@ -393,6 +325,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     ) {
         this.changeReviews = new ChangeReviewStore(output);
         this.toolDiffs = new ToolDiffStore(output);
+        this.subagents = new SubagentController({
+            runtime,
+            currentRootSession: () => this.sessionId,
+            onChange: () => this.postState(),
+        });
+        this.messageFeedback = new MessageFeedbackController({
+            runtime,
+            currentRootSession: () => this.sessionId,
+            onChange: () => this.postState(),
+        });
         const unsubscribeSession = runtime.getSessionStore().onDidChange((sessionId, snapshot) => {
             const catalogSession = runtime.getSessionCatalog().snapshot().sessions.find(
                 (item) => item.sessionId === sessionId,
@@ -404,8 +346,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     snapshot,
                 );
             }
-            const subagentTimingChanged = this.observeSubagentTiming(sessionId, snapshot);
+            const subagentTimingChanged = this.subagents.observeSubagentTiming(sessionId, snapshot);
             if (sessionId === this.sessionId) {
+                this.observeModelSelection(sessionId, snapshot);
                 this.goalMutations.observe(
                     sessionId,
                     projectionCell(snapshot, "goal"),
@@ -418,7 +361,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         const unsubscribeCatalog = runtime.getSessionCatalog().onDidChange(() => {
             this.observeSessionTransitions();
             this.schedulePostState();
-            this.scheduleSubagentRefresh();
+            this.subagents.scheduleSubagentRefresh();
         });
         this.disposables.push(
             vscode.workspace.registerTextDocumentContentProvider(
@@ -433,14 +376,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     this.agentPresetDocuments.delete(document.uri.toString());
                 }
             }),
-            runtime.onDidChange(() => this.schedulePostState()),
+            runtime.onDidChange((status) => {
+                if (status.state === "stopped") {
+                    ++this.dynamicPluginsGeneration;
+                    this.dynamicPlugins = undefined;
+                }
+                this.schedulePostState();
+            }),
             agentStatusPresentations?.onDidChange(() => this.schedulePostState()) ?? new vscode.Disposable(() => {}),
             runtime.onDidRemoteEvent((event) => {
                 // Forwarded RC events carry no diff. Invalidate the affected
                 // local cache and repull the visible session when possible.
                 switch (event) {
                     case "commands/change":
-                        this.invalidateCommandCatalogs();
+                        this.commandCatalogs.invalidate();
                         if (this.sessionId) this.refreshCommandCatalog(this.sessionId);
                         break;
                     case "agent-preset/selected":
@@ -449,14 +398,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                         break;
                     case "llm/adapters-updated":
                     case "credentials/reference-updated":
-                        this.invalidateModelCatalogs();
+                        this.modelCatalogs.invalidate();
                         if (this.sessionId) this.refreshModelCatalog(this.sessionId);
                         break;
                     case "settings/document-updated":
                         ++this.settingsPanelGeneration;
+                        ++this.pluginInventoryGeneration;
                         this.settingsPanel = undefined;
                         this.settingsNamespaces.clear();
                         this.postState();
+                        break;
+                    case "cordis/dynamic-package":
+                    case "cordis/dynamic-retract":
+                    case "cordis/request-run":
+                    case "cordis/request-run-resolved":
+                        void this.refreshDynamicPlugins();
                         break;
                     default:
                         break;
@@ -465,12 +421,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             runtime.onDidHarnessConnect(() => {
                 this.commandRegistryUnavailable = false;
                 this.commandCatalogs.clear();
+                void this.refreshDynamicPlugins();
                 void this.restorePersistedSession(this.workspaceRoot()).then(() => {
                     if (this.sessionId) {
                         this.refreshModelCatalog(this.sessionId);
                         this.refreshSkillCatalog(this.sessionId);
                         this.refreshCommandCatalog(this.sessionId);
-                        void this.refreshSubagentTree(this.sessionId);
+                        void this.subagents.refreshSubagentTree(this.sessionId);
                     }
                 });
             }),
@@ -676,36 +633,166 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         if (this.settingsPanel?.open) {
             this.settingsPanel = undefined;
             this.settingsNamespaces.clear();
+            ++this.settingsPanelGeneration;
+            ++this.pluginInventoryGeneration;
             this.postState();
             return;
         }
         const generation = ++this.settingsPanelGeneration;
+        const inventoryGeneration = ++this.pluginInventoryGeneration;
         this.settingsPanel = {
             open: true,
             loading: true,
             writable: false,
             hasDocument: false,
             cards: [],
+            pluginInventory: { loading: true, entries: [] },
         };
         this.postState();
         try {
             await this.runtime.start(this.workspaceRoot());
-            const result = await this.runtime.describeSettings();
-            if (generation !== this.settingsPanelGeneration) return;
-            this.settingsNamespaces.clear();
-            for (const namespace of result.namespaces) this.settingsNamespaces.set(namespace.ns, namespace);
-            this.settingsPanel = presentSettingsPanel(result);
+            const [settingsResult, inventoryResult] = await Promise.allSettled([
+                this.runtime.describeSettings(),
+                this.runtime.pluginInventory(),
+            ]);
+            if (generation !== this.settingsPanelGeneration || inventoryGeneration !== this.pluginInventoryGeneration) return;
+            if (settingsResult.status === "fulfilled") {
+                this.settingsNamespaces.clear();
+                for (const namespace of settingsResult.value.namespaces) this.settingsNamespaces.set(namespace.ns, namespace);
+                this.settingsPanel = presentSettingsPanel(settingsResult.value);
+            } else {
+                this.settingsNamespaces.clear();
+                this.settingsPanel = {
+                    open: true,
+                    writable: false,
+                    hasDocument: false,
+                    cards: [],
+                    error: errorMessage(settingsResult.reason),
+                };
+                this.output.appendLine(`[dsh:settings] describe failed: ${errorMessage(settingsResult.reason)}`);
+            }
+            if (inventoryResult.status === "fulfilled") {
+                this.settingsPanel.pluginInventory = {
+                    entries: inventoryResult.value.entries,
+                    ...(inventoryResult.value.agentPresets === undefined
+                        ? {}
+                        : { agentPresets: inventoryResult.value.agentPresets }),
+                };
+            } else {
+                this.settingsPanel.pluginInventory = {
+                    entries: [],
+                    error: t("Plugins are temporarily unavailable."),
+                };
+                this.output.appendLine(`[dsh:plugin-inventory] list failed: ${errorMessage(inventoryResult.reason)}`);
+            }
         } catch (error) {
-            if (generation !== this.settingsPanelGeneration) return;
+            if (generation !== this.settingsPanelGeneration || inventoryGeneration !== this.pluginInventoryGeneration) return;
             this.settingsPanel = {
                 open: true,
                 writable: false,
                 hasDocument: false,
                 cards: [],
                 error: errorMessage(error),
+                pluginInventory: {
+                    entries: [],
+                    error: t("Plugins are temporarily unavailable."),
+                },
             };
+            this.output.appendLine(`[dsh:settings] panel load failed: ${errorMessage(error)}`);
         }
         this.postState();
+    }
+
+    private async refreshPluginInventory(): Promise<void> {
+        const panel = this.settingsPanel;
+        if (!panel?.open) return;
+        const generation = ++this.pluginInventoryGeneration;
+        this.settingsPanel = {
+            ...panel,
+            pluginInventory: { loading: true, entries: [] },
+        };
+        this.postState();
+        try {
+            await this.runtime.start(this.workspaceRoot());
+            const inventory = await this.runtime.pluginInventory();
+            if (generation !== this.pluginInventoryGeneration || !this.settingsPanel?.open) return;
+            this.settingsPanel = {
+                ...this.settingsPanel,
+                pluginInventory: {
+                    entries: inventory.entries,
+                    ...(inventory.agentPresets === undefined
+                        ? {}
+                        : { agentPresets: inventory.agentPresets }),
+                },
+            };
+        } catch (error) {
+            if (generation !== this.pluginInventoryGeneration || !this.settingsPanel?.open) return;
+            this.settingsPanel = {
+                ...this.settingsPanel,
+                pluginInventory: {
+                    entries: [],
+                    error: t("Plugins are temporarily unavailable."),
+                },
+            };
+            this.output.appendLine(`[dsh:plugin-inventory] refresh failed: ${errorMessage(error)}`);
+        }
+        this.postState();
+    }
+
+    private async refreshDynamicPlugins(): Promise<void> {
+        const generation = ++this.dynamicPluginsGeneration;
+        const previousRows = this.dynamicPlugins?.rows ?? [];
+        this.dynamicPlugins = { rows: previousRows, loading: true };
+        this.postState();
+        try {
+            await this.runtime.start(this.workspaceRoot());
+            const rows = await this.runtime.dynamicPluginInventory();
+            if (generation !== this.dynamicPluginsGeneration) return;
+            if (rows === undefined) {
+                this.dynamicPlugins = undefined;
+            } else {
+                this.dynamicPlugins = { rows };
+            }
+        } catch (error) {
+            if (generation !== this.dynamicPluginsGeneration) return;
+            this.dynamicPlugins = {
+                rows: previousRows,
+                error: t("Dynamic plugins are temporarily unavailable."),
+            };
+            this.output.appendLine(`[dsh:dynamic-plugins] inventory failed: ${errorMessage(error)}`);
+        }
+        this.postState();
+    }
+
+    private async stopDynamicPlugin(sessionId: string, pluginId: string): Promise<void> {
+        const present = this.dynamicPlugins?.rows.some(
+            (candidate) => candidate.agentId === sessionId && candidate.pluginId === pluginId,
+        );
+        if (!present) throw new Error(t("Dynamic plugin state is out of date. Refresh and try again."));
+        const result = await this.runtime.stopDynamicPlugin(sessionId, pluginId);
+        if (!result.ok) throw new Error(result.message);
+        await this.refreshDynamicPlugins();
+    }
+
+    private async removeDynamicPlugin(sessionId: string, pluginId: string): Promise<void> {
+        const present = this.dynamicPlugins?.rows.some(
+            (candidate) => candidate.agentId === sessionId && candidate.pluginId === pluginId,
+        );
+        if (!present) throw new Error(t("Dynamic plugin state is out of date. Refresh and try again."));
+        const result = await this.runtime.removeDynamicPlugin(sessionId, pluginId);
+        if (!result.ok) throw new Error(result.message);
+        await this.refreshDynamicPlugins();
+    }
+
+    private async declineDynamicPlugin(pluginId: string, requestId: string): Promise<void> {
+        const row = this.dynamicPlugins?.rows.find((candidate) => candidate.pluginId === pluginId);
+        const latest = row?.latestRun;
+        if (!latest || latest.status !== "awaiting-approval" || latest.approvalRequestId !== requestId) {
+            throw new Error(t("Dynamic plugin approval is out of date. Refresh and try again."));
+        }
+        const result = await this.runtime.declineDynamicPlugin(requestId, latest.pluginRunId);
+        if (!result.accepted) throw new Error(t("The dynamic plugin approval was already resolved."));
+        await this.refreshDynamicPlugins();
     }
 
     private async mutateSettings(
@@ -723,11 +810,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         if (ops.length === 0) return;
         const updated = await this.runtime.mutateSettings(namespaceId, ops, revision);
         this.settingsNamespaces.set(namespaceId, updated);
-        this.settingsPanel = presentSettingsPanel({
+        const refreshed = presentSettingsPanel({
             writable: panel.writable,
             hasDocument: panel.hasDocument,
             namespaces: [...this.settingsNamespaces.values()],
         });
+        this.settingsPanel = {
+            ...refreshed,
+            ...(panel.pluginInventory === undefined ? {} : { pluginInventory: panel.pluginInventory }),
+        };
         this.postState();
     }
 
@@ -799,6 +890,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
 
     /** Lets the user attach one of the commands captured by shell integration. */
+    /**
+     * Pre-fills the composer from a workspace prompt template under
+     * `.dsh/prompts`. Discovery is read-only and insertion is a visible draft
+     * — sending stays a separate, manual step.
+     */
+    public async insertPromptTemplate(): Promise<void> {
+        const workspaceRoot = this.workspaceRoot();
+        if (!workspaceRoot) {
+            throw new Error(t("Open a workspace first."));
+        }
+        const promptsRoot = vscode.Uri.joinPath(vscode.Uri.file(workspaceRoot), ".dsh", "prompts");
+        const templates = await listPromptTemplates(promptsRoot);
+        if (templates.length === 0) {
+            void vscode.window.showInformationMessage(
+                t("No prompt templates found under .dsh/prompts in this workspace."),
+            );
+            return;
+        }
+        const picked = await vscode.window.showQuickPick(
+            templates.map((entry) => ({
+                label: entry.label,
+                description: entry.path,
+                ...(entry.preview.length === 0 ? {} : { detail: entry.preview }),
+                path: entry.path,
+            })),
+            {
+                title: t("Prompt templates"),
+                placeHolder: t("The template becomes the composer draft; sending stays manual."),
+            },
+        );
+        if (!picked) return;
+        this.setComposerText(await readPromptTemplate(promptsRoot, picked.path));
+    }
+
     public async openTerminalCommandPicker(): Promise<void> {
         const records = this.terminalContext.recent();
         if (records.length === 0) {
@@ -879,11 +1004,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return this.sessionId;
     }
 
-    public revealConversationMilestone(seq: number): void {
+    public async revealConversationMilestone(seq: number): Promise<void> {
         if (!Number.isSafeInteger(seq) || seq < 0) return;
         this.reveal();
         if (!this.view || !this.webviewReady) return;
-        void this.view.webview.postMessage({ type: "revealMessage", seq });
+        const sessionId = this.sessionId;
+        let targetSeq = this.conversationRevealTarget(seq);
+        if (targetSeq === undefined && sessionId) {
+            // turnOutline anchors at `turn/start`, which is not itself a
+            // rendered message. Rebaseline once so an unloaded turn can still
+            // resolve to its first visible surface node before scrolling.
+            await this.runtime.syncSession(sessionId);
+            // The user can switch sessions across the await; resolving against
+            // the new session's snapshot would reveal an unrelated message.
+            if (this.sessionId !== sessionId) return;
+            targetSeq = this.conversationRevealTarget(seq);
+        }
+        if (!this.view || !this.webviewReady) return;
+        void this.view.webview.postMessage({ type: "revealMessage", seq: targetSeq ?? seq });
+    }
+
+    private conversationRevealTarget(seq: number): number | undefined {
+        const snapshot = this.sessionId
+            ? this.runtime.getSessionStore().get(this.sessionId)
+            : undefined;
+        if (!snapshot) return undefined;
+        const exact = snapshot.surface.nodes.find((node) => node.seq === seq);
+        if (exact) return exact.seq;
+
+        const outline = snapshot.projections.find((cell) => cell.key === "turnOutline")?.value;
+        if (!Array.isArray(outline) || !outline.some((candidate) =>
+            isRecord(candidate) && candidate.seq === seq,
+        )) return undefined;
+        return snapshot.surface.nodes.find((node) => node.seq > seq)?.seq;
     }
 
     public async openBrowser(): Promise<void> {
@@ -895,12 +1048,47 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         await vscode.env.openExternal(vscode.Uri.parse(url));
     }
 
+    /**
+     * Open a generated file location in the local editor when it belongs to
+     * this workspace. Remote deployments may own the Session cwd on another
+     * filesystem, so fall back to the public Session opener only after the
+     * local, bounded path check has failed and the Host advertises support.
+     */
+    private async openFileLocation(
+        location: Extract<ChatViewAction, { type: "openFileLocation" }>,
+    ): Promise<void> {
+        try {
+            await openWorkspaceFileLocation(
+                location,
+                this.sessionCwd ?? this.workspaceRoot(),
+            );
+            return;
+        } catch (localError) {
+            if (!this.runtime.getUrl()) throw localError;
+            let canOpen = this.runtime.getHostDescription()?.canOpenPath;
+            if (canOpen === undefined) {
+                try {
+                    canOpen = await this.runtime.canOpenWorkspacePath();
+                } catch {
+                    throw localError;
+                }
+            }
+            if (!canOpen) throw localError;
+            try {
+                await this.runtime.openWorkspacePath(location.path);
+            } catch {
+                // Preserve the local diagnostic when the remote opener also
+                // rejects the path; its failure is only a fallback attempt.
+                throw localError;
+            }
+        }
+    }
+
     public dispose(): void {
         this.viewMessageDisposable?.dispose();
         if (this.stateUpdateTimer) clearTimeout(this.stateUpdateTimer);
-        if (this.subagentRefreshTimer) clearTimeout(this.subagentRefreshTimer);
-        for (const controller of this.subagentTreeAborts.values()) controller.abort();
-        this.subagentPreviewAbort?.abort();
+        this.subagents.dispose();
+        this.fileReferenceQueryAbort?.abort();
         this.changeReviews.dispose();
         this.toolDiffs.dispose();
         for (const disposable of this.disposables) {
@@ -921,7 +1109,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     this.postState();
                     this.flushPendingComposerUpdate();
                     this.flushPendingComposerImages();
-                    if (this.sessionId) void this.refreshSubagentTree(this.sessionId);
+                    if (this.sessionId) void this.subagents.refreshSubagentTree(this.sessionId);
                     break;
                 case "sendPrompt":
                     await this.sendPrompt(message.text ?? "", message.mode, message.images ?? []);
@@ -941,6 +1129,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                 case "manageSettings":
                     await this.toggleSettingsPanel();
                     break;
+                case "refreshPluginInventory":
+                    await this.refreshPluginInventory();
+                    break;
+                case "refreshDynamicPlugins":
+                    await this.refreshDynamicPlugins();
+                    break;
+                case "stopDynamicPlugin":
+                    await this.stopDynamicPlugin(message.sessionId, message.pluginId);
+                    break;
+                case "removeDynamicPlugin":
+                    await this.removeDynamicPlugin(message.sessionId, message.pluginId);
+                    break;
+                case "declineDynamicPlugin":
+                    await this.declineDynamicPlugin(message.pluginId, message.requestId);
+                    break;
                 case "openSettingsDocument":
                     await this.openBrowser();
                     break;
@@ -959,6 +1162,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                 case "openTerminalCommandPicker":
                     await this.openTerminalCommandPicker();
                     break;
+                case "openPromptTemplatePicker":
+                    await this.insertPromptTemplate();
+                    break;
                 case "captureAppShot":
                     await this.captureAppShot();
                     break;
@@ -969,7 +1175,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     await this.loadImage(message.attachmentId);
                     break;
                 case "fileReferenceQuery":
-                    await this.updateFileReferenceCandidates(message.query);
+                    await this.updateFileReferenceCandidates(message.query, message.quoted === true);
                     break;
                 case "toggleSelection":
                     this.selectionEnabled = !this.selectionEnabled;
@@ -999,10 +1205,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     break;
                 }
                 case "openFileLocation":
-                    await openWorkspaceFileLocation(
-                        message,
-                        this.sessionCwd ?? this.workspaceRoot(),
-                    );
+                    await this.openFileLocation(message);
                     break;
                 case "copyCode":
                     await this.copyCodeBlock(message.renderId, message.codeBlockId);
@@ -1066,10 +1269,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     await this.runCheckpointAction(() => this.forkAndRestoreCodeToMessage(message.seq));
                     break;
                 case "toggleMessageFeedback":
-                    await this.toggleMessageFeedback(message.messageId, message.rating);
+                    await this.messageFeedback.toggleMessageFeedback(message.messageId, message.rating);
                     break;
                 case "saveMessageFeedbackNote":
-                    await this.saveMessageFeedbackNote(message.messageId, message.note);
+                    await this.messageFeedback.saveMessageFeedbackNote(message.messageId, message.note);
                     break;
                 case "switchSession":
                     await this.switchSession(message.sessionId);
@@ -1113,19 +1316,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     await this.mutateGoal(message);
                     break;
                 case "refreshSubagents":
-                    if (this.sessionId) await this.refreshSubagentTree(this.sessionId);
+                    if (this.sessionId) await this.subagents.refreshSubagentTree(this.sessionId);
                     break;
                 case "openSubagent":
-                    await this.openSubagentHistory(message.childSessionId);
+                    await this.subagents.openSubagentHistory(message.childSessionId);
                     break;
                 case "closeSubagent":
-                    this.closeSubagentHistory();
+                    this.subagents.closeSubagentHistory();
                     break;
                 case "followUpSubagent":
-                    await this.followUpSubagent(message.childSessionId, message.text);
+                    await this.subagents.followUpSubagent(message.childSessionId, message.text);
                     break;
                 case "interruptSubagent":
-                    await this.interruptSubagent(message.childSessionId);
+                    await this.subagents.interruptSubagent(message.childSessionId);
                     break;
                 case "answerApproval":
                     await this.answerApproval(message);
@@ -1144,76 +1347,170 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         }
     }
 
-    private async updateFileReferenceCandidates(query: string): Promise<void> {
+    private async updateFileReferenceCandidates(query: string, preserveQuote = false): Promise<void> {
         const generation = ++this.fileReferenceQueryGeneration;
+        this.fileReferenceQueryAbort?.abort();
+        const controller = new AbortController();
+        this.fileReferenceQueryAbort = controller;
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         const normalizedQuery = query.trim().replaceAll("\\", "/").toLowerCase();
         const filesPromise = workspaceFolder
-            ? Promise.resolve(vscode.workspace.findFiles("**/*", "**/{.git,node_modules,.DS_Store}/**", 2_000)).catch(() => [] as vscode.Uri[])
+            ? Promise.resolve(vscode.workspace.findFiles("**/*", "**/{.git,node_modules,.DS_Store}/**", 2_000))
+                .catch(() => [] as vscode.Uri[])
             : Promise.resolve([] as vscode.Uri[]);
-        const searchPromise: Promise<DshSessionSearchItem[]> = normalizedQuery && this.runtime.getUrl()
-            ? this.runtime.searchSessions(query.trim()).then((result) => result.items).catch(() => [])
-            : Promise.resolve([]);
-        const [uris, searchItems] = await Promise.all([filesPromise, searchPromise]);
-        if (generation !== this.fileReferenceQueryGeneration) return;
-        const terminalCandidates = this.terminalContext.referenceCandidates(query);
-        const active = vscode.window.activeTextEditor?.document.uri;
-        const fileCandidates = uris
-            .map((uri) => vscode.workspace.asRelativePath(uri, false).replaceAll("\\", "/"))
-            .filter((relative) => !normalizedQuery || relative.toLowerCase().includes(normalizedQuery))
-            .map((relative): DshReferenceCandidate => ({
-                kind: "file",
-                label: relative,
-                insertText: `@${relative}`,
-            }));
-        const activeRelative = active
-            ? vscode.workspace.asRelativePath(active, false).replaceAll("\\", "/")
-            : undefined;
-        const orderedFiles = activeRelative && (!normalizedQuery || activeRelative.toLowerCase().includes(normalizedQuery))
-            ? [
-                  { kind: "file", label: activeRelative, insertText: `@${activeRelative}` } satisfies DshReferenceCandidate,
-                  ...fileCandidates.filter((candidate) => candidate.label !== activeRelative),
-              ]
-            : fileCandidates;
-
-        const remoteById = new Map(searchItems.map((item) => [item.sessionId, item]));
-        const sessionById = new Map<string, { sessionId: string; title?: string; cwd?: string; blank?: boolean }>();
-        for (const session of this.runtime.getSessionCatalog().snapshot().sessions) {
-            sessionById.set(session.sessionId, session);
-        }
-        for (const item of searchItems) {
-            if (!sessionById.has(item.sessionId)) sessionById.set(item.sessionId, { sessionId: item.sessionId });
-        }
-        const sessionCandidates = [...sessionById.values()]
-            .filter((session) => session.blank !== true && session.sessionId !== this.sessionId)
-            .filter((session) => {
-                if (!normalizedQuery) return true;
-                const remote = remoteById.get(session.sessionId);
-                const searchable = [session.sessionId, session.title, session.cwd, remote?.snippet]
-                    .filter((part): part is string => typeof part === "string")
-                    .join("\\n")
-                    .toLowerCase();
-                return searchable.includes(normalizedQuery);
-            })
-            .map((session): DshReferenceCandidate => {
-                const label = session.title?.trim() || session.sessionId;
-                const escapedLabel = label.replace(/[\x5c\]]/gu, (match) => `\x5c${match}`);
-                const payload = Buffer.from(JSON.stringify(session.sessionId), "utf8").toString("base64url");
-                const remote = remoteById.get(session.sessionId);
-                const description = [
-                    session.sessionId,
-                    session.cwd,
-                    remote?.snippet,
-                ].filter((part): part is string => typeof part === "string" && part.length > 0).join(" · ");
-                return {
-                    kind: "session",
-                    label,
-                    insertText: `@[${escapedLabel}](dsh-session:${payload})`,
-                    ...(description ? { description } : {}),
-                };
+        const remoteSessionId = this.sessionId;
+        const remoteEnabled = remoteSessionId !== undefined && this.runtime.getUrl() !== undefined;
+        const optionalRemote = <T>(endpoint: string, request: Promise<T>): Promise<T | undefined> =>
+            request.catch((error) => {
+                if (!controller.signal.aborted) {
+                    this.output.appendLine(
+                        "[dsh:rpc] " + endpoint + " candidate lookup failed: " + errorMessage(error),
+                    );
+                }
+                return undefined;
             });
-        this.fileReferenceCandidates = [...terminalCandidates, ...orderedFiles, ...sessionCandidates].slice(0, 40);
-        this.postState();
+        const remoteFilesPromise: Promise<DshFileReferenceCandidate[] | undefined> = remoteEnabled
+            ? optionalRemote(
+                  "fileReferences/list",
+                  this.runtime.listFileReferences(remoteSessionId, query, controller.signal),
+              )
+            : Promise.resolve(undefined);
+        let remoteSessionsPromise: Promise<DshSessionReferenceCandidate[] | undefined>;
+        if (preserveQuote) {
+            remoteSessionsPromise = Promise.resolve([]);
+        } else if (remoteEnabled) {
+            remoteSessionsPromise = optionalRemote(
+                "sessionReferenceResolver/candidates",
+                this.runtime.listSessionReferenceCandidates(remoteSessionId, query, controller.signal),
+            );
+        } else {
+            remoteSessionsPromise = Promise.resolve(undefined);
+        }
+        const searchPromise: Promise<DshSessionSearchItem[]> = !preserveQuote && normalizedQuery && remoteEnabled
+            ? this.runtime.searchSessions(query.trim(), controller.signal).then((result) => result.items).catch((error) => {
+                  if (!controller.signal.aborted) {
+                      this.output.appendLine(
+                          "[dsh:rpc] session/search candidate lookup failed: " + errorMessage(error),
+                      );
+                  }
+                  return [];
+              })
+            : Promise.resolve([]);
+
+        try {
+            const [uris, searchItems, remoteFiles, remoteSessions] = await Promise.all([
+                filesPromise,
+                searchPromise,
+                remoteFilesPromise,
+                remoteSessionsPromise,
+            ]);
+            if (generation !== this.fileReferenceQueryGeneration || controller.signal.aborted) return;
+
+            const terminalCandidates = this.terminalContext.referenceCandidates(query);
+            const active = vscode.window.activeTextEditor?.document.uri;
+            const localFileCandidates = uris
+                .map((uri) => vscode.workspace.asRelativePath(uri, false).replaceAll("\\", "/"))
+                .filter((path) => !normalizedQuery || path.toLowerCase().includes(normalizedQuery))
+                .map((path): DshReferenceCandidate | undefined => {
+                    const candidate: DshFileReferenceCandidate = { kind: "file", path };
+                    const presentation = referencePathPresentation(path, false);
+                    const insertText = formatFileReferenceMention(candidate, preserveQuote);
+                    if (!insertText) return undefined;
+                    return {
+                        kind: "file",
+                        label: presentation.label,
+                        insertText,
+                        ...(presentation.parent === undefined ? {} : { description: presentation.parent }),
+                    };
+                })
+                .filter((candidate): candidate is DshReferenceCandidate => candidate !== undefined);
+            const activeRelative = active
+                ? vscode.workspace.asRelativePath(active, false).replaceAll("\\", "/")
+                : undefined;
+            const activeInsertText = activeRelative === undefined
+                ? undefined
+                : formatFileReferenceMention({ kind: "file", path: activeRelative }, preserveQuote);
+            const activeCandidate = activeRelative
+                ? localFileCandidates.find((candidate) => candidate.insertText === activeInsertText)
+                : undefined;
+            const orderedLocalFiles = activeCandidate
+                ? [
+                      activeCandidate,
+                      ...localFileCandidates.filter((candidate) => candidate !== activeCandidate),
+                  ]
+                : localFileCandidates;
+
+            const remoteFileCandidates = remoteFiles?.map((candidate): DshReferenceCandidate | undefined => {
+                const presentation = referencePathPresentation(
+                    candidate.path,
+                    candidate.kind === "directory",
+                );
+                const insertText = formatFileReferenceMention(candidate, preserveQuote);
+                if (!insertText) return undefined;
+                return {
+                    kind: candidate.kind,
+                    label: presentation.label,
+                    insertText,
+                    ...(presentation.parent === undefined ? {} : { description: presentation.parent }),
+                };
+            }).filter((candidate): candidate is DshReferenceCandidate => candidate !== undefined);
+            const fileCandidates = remoteFileCandidates ?? orderedLocalFiles;
+
+            const remoteById = new Map(searchItems.map((item) => [item.sessionId, item]));
+            const sessionById = new Map<string, { sessionId: string; title?: string; cwd?: string; blank?: boolean }>();
+            for (const session of this.runtime.getSessionCatalog().snapshot().sessions) {
+                sessionById.set(session.sessionId, session);
+            }
+            for (const item of searchItems) {
+                if (!sessionById.has(item.sessionId)) sessionById.set(item.sessionId, { sessionId: item.sessionId });
+            }
+            const localSessionCandidates = [...sessionById.values()]
+                .filter((session) => session.blank !== true && session.sessionId !== this.sessionId)
+                .filter((session) => {
+                    if (!normalizedQuery) return true;
+                    const remote = remoteById.get(session.sessionId);
+                    const searchable = [session.sessionId, session.title, session.cwd, remote?.snippet]
+                        .filter((part): part is string => typeof part === "string")
+                        .join("\\n")
+                        .toLowerCase();
+                    return searchable.includes(normalizedQuery);
+                })
+                .map((session): DshReferenceCandidate => {
+                    const label = session.title?.trim() || session.sessionId;
+                    const remote = remoteById.get(session.sessionId);
+                    const description = [
+                        session.sessionId,
+                        session.cwd,
+                        remote?.snippet,
+                    ].filter((part): part is string => typeof part === "string" && part.length > 0).join(" · ");
+                    return {
+                        kind: "session",
+                        label,
+                        insertText: formatSessionReferenceMention(session.sessionId, label),
+                        ...(description ? { description } : {}),
+                    };
+                });
+            const remoteSessionCandidates = remoteSessions
+                ?.filter((candidate) => candidate.sessionId !== this.sessionId)
+                .map((candidate): DshReferenceCandidate => {
+                    const description = [
+                        candidate.sameWorkspace ? undefined : "other workspace",
+                        candidate.cwd,
+                        candidate.sessionId,
+                    ].filter((part): part is string => typeof part === "string" && part.length > 0).join(" · ");
+                    return {
+                        kind: "session",
+                        label: candidate.label,
+                        insertText: candidate.mention,
+                        ...(description ? { description } : {}),
+                    };
+                });
+            const sessionCandidates = remoteSessionCandidates ?? localSessionCandidates;
+            this.fileReferenceCandidates = [...terminalCandidates, ...fileCandidates, ...sessionCandidates].slice(0, 40);
+            this.postState();
+        } finally {
+            if (this.fileReferenceQueryAbort === controller) this.fileReferenceQueryAbort = undefined;
+        }
     }
 
     private async sendPrompt(
@@ -1420,7 +1717,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                 this.pendingNewSessionPreset,
                 workspace.workspace.workspaceId,
             );
-            if (this.sessionId !== created.sessionId) this.discardSubagentPreview();
+            if (this.sessionId !== created.sessionId) this.subagents.discardSubagentPreview();
             this.sessionId = created.sessionId;
             this.sessionCwd = this.pendingNewSessionWorkspacePath ?? workspaceRoot;
             if (persist) {
@@ -1429,7 +1726,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     cwd: workspaceRoot,
                 } satisfies PersistedSession);
             }
-            void this.refreshSubagentTree(created.sessionId);
+            void this.subagents.refreshSubagentTree(created.sessionId);
             this.newSessionDraft = false;
             this.clearNewSessionDraft();
         }
@@ -1526,7 +1823,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.pendingNewSessionWorkspaceTitle = selectedWorkspace?.title;
         this.optimisticPrompts.length = 0;
         this.cancelRequested = false;
-        this.discardSubagentPreview();
+        this.subagents.discardSubagentPreview();
         await this.extensionContext.workspaceState.update("session", undefined);
         this.postState();
         this.reveal();
@@ -1903,7 +2200,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             );
         this.sessionId = undefined;
         this.sessionCwd = undefined;
-        this.discardSubagentPreview();
+        this.subagents.discardSubagentPreview();
         await this.extensionContext.workspaceState.update("session", undefined);
         if (next) await this.switchSession(next.sessionId);
         this.postState();
@@ -1912,7 +2209,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private async switchSession(sessionId: string): Promise<void> {
         const catalog = this.runtime.getSessionCatalog().snapshot();
         const session = catalog.sessions.find((item) => item.sessionId === sessionId);
-        if (this.sessionId !== sessionId) this.discardSubagentPreview();
+        if (this.sessionId !== sessionId) this.subagents.discardSubagentPreview();
         this.sessionId = sessionId;
         this.sessionCwd = session?.cwd ?? this.workspaceRoot();
         this.newSessionDraft = false;
@@ -1927,7 +2224,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.refreshModelCatalog(sessionId);
         this.refreshSkillCatalog(sessionId);
         this.refreshCommandCatalog(sessionId);
-        void this.refreshSubagentTree(sessionId);
+        void this.subagents.refreshSubagentTree(sessionId);
         this.reveal();
     }
 
@@ -2038,662 +2335,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             throw error;
         } finally {
             this.postState();
-        }
-    }
-
-    /** Start or reuse the sidecar list read for one selected Session. */
-    private refreshMessageFeedback(sessionId: string, force = false): Promise<void> {
-        if (!this.runtime.getUrl()) return Promise.resolve();
-        const inFlight = this.messageFeedbackRequests.get(sessionId);
-        if (inFlight) return inFlight;
-        const existing = this.messageFeedbackStates.get(sessionId);
-        if (!force && (existing?.status === "ready" || existing?.status === "unavailable")) {
-            return Promise.resolve();
-        }
-
-        const generation = (this.messageFeedbackGenerations.get(sessionId) ?? 0) + 1;
-        this.messageFeedbackGenerations.set(sessionId, generation);
-        const state: MessageFeedbackSessionState = existing ?? {
-            status: "loading",
-            items: new Map(),
-            pending: new Set(),
-            errors: new Map(),
-        };
-        state.status = "loading";
-        state.error = undefined;
-        state.errors.clear();
-        this.messageFeedbackStates.set(sessionId, state);
-        if (sessionId === this.sessionId) this.postState();
-
-        const request = this.runtime.listMessageFeedback(sessionId)
-            .then((raw) => {
-                if (this.messageFeedbackGenerations.get(sessionId) !== generation) return;
-                if (raw === undefined) {
-                    state.status = "unavailable";
-                    state.items.clear();
-                    state.pending.clear();
-                    state.errors.clear();
-                    state.error = undefined;
-                    return;
-                }
-                const result = normalizeMessageFeedbackListResult(raw);
-                if (!result) {
-                    throw new Error(t("Harness returned an invalid messageFeedback.list result."));
-                }
-                if (!result.ok) {
-                    if (result.error.code === "session-not-found") {
-                        state.status = "unavailable";
-                        state.items.clear();
-                        state.pending.clear();
-                        state.errors.clear();
-                        state.error = undefined;
-                    } else {
-                        state.status = "error";
-                        state.error = this.messageFeedbackFailure(result.error.code);
-                    }
-                    return;
-                }
-                state.status = "ready";
-                state.items = new Map(result.value.items.map((item) => [item.messageId, item]));
-                state.pending.clear();
-                state.errors.clear();
-                state.error = undefined;
-            })
-            .catch((error) => {
-                if (this.messageFeedbackGenerations.get(sessionId) !== generation) return;
-                state.status = "error";
-                state.error = errorMessage(error);
-            })
-            .finally(() => {
-                if (this.messageFeedbackRequests.get(sessionId) === request) {
-                    this.messageFeedbackRequests.delete(sessionId);
-                }
-                if (sessionId === this.sessionId) this.postState();
-            });
-        this.messageFeedbackRequests.set(sessionId, request);
-        return request;
-    }
-
-    /** Wait for a usable sidecar state, with older Runtimes degrading quietly. */
-    private async ensureMessageFeedback(sessionId: string): Promise<MessageFeedbackSessionState | undefined> {
-        await this.refreshMessageFeedback(sessionId);
-        const state = this.messageFeedbackStates.get(sessionId);
-        return state?.status === "ready" ? state : undefined;
-    }
-
-    /** Serialize feedback mutations per Session so every CAS compares the latest item. */
-    private enqueueMessageFeedback(
-        sessionId: string,
-        messageId: string,
-        operation: (state: MessageFeedbackSessionState) => Promise<void>,
-    ): Promise<void> {
-        const previous = this.messageFeedbackOperationTails.get(sessionId) ?? Promise.resolve();
-        const run = previous.then(async () => {
-            let state: MessageFeedbackSessionState | undefined;
-            try {
-                state = await this.ensureMessageFeedback(sessionId);
-                if (!state) return;
-                state.pending.add(messageId);
-                state.errors.delete(messageId);
-                this.postState();
-                await operation(state);
-            } catch (error) {
-                state ??= this.messageFeedbackStates.get(sessionId);
-                if (state) {
-                    state.status = state.status === "unavailable" ? "unavailable" : "error";
-                    state.errors.set(messageId, errorMessage(error));
-                    state.error = undefined;
-                }
-            } finally {
-                state?.pending.delete(messageId);
-                if (sessionId === this.sessionId) this.postState();
-            }
-        }, async () => {
-            // The operation body contains its own error presentation. Keep a
-            // rejected predecessor from starving later clicks in the queue.
-        });
-        const tail = run.then(() => undefined, () => undefined);
-        this.messageFeedbackOperationTails.set(sessionId, tail);
-        return run.finally(() => {
-            if (this.messageFeedbackOperationTails.get(sessionId) === tail) {
-                this.messageFeedbackOperationTails.delete(sessionId);
-            }
-        });
-    }
-
-    /** Human-readable fallback for the stable business failure codes. */
-    private messageFeedbackFailure(code: string): string {
-        switch (code) {
-            case "session-not-found":
-                return t("This session is no longer available for feedback.");
-            case "target-not-found":
-                return t("This message is no longer available for feedback.");
-            case "version-conflict":
-                return t("Feedback changed elsewhere; try again.");
-            case "note-blank":
-                return t("A feedback note must contain text.");
-            case "note-too-large":
-                return t("The feedback note is too long.");
-            default:
-                return t("The feedback operation was rejected.");
-        }
-    }
-
-    /** Mark the optional feature absent when a Runtime does not mount it. */
-    private disableMessageFeedback(state: MessageFeedbackSessionState): void {
-        state.status = "unavailable";
-        state.items.clear();
-        state.pending.clear();
-        state.errors.clear();
-        state.error = undefined;
-    }
-
-    /** Apply one put response and reconcile a lost CAS race from its authority. */
-    private async applyMessageFeedbackPut(
-        state: MessageFeedbackSessionState,
-        request: DshMessageFeedbackPutRequest,
-    ): Promise<void> {
-        const raw = await this.runtime.putMessageFeedback(request);
-        if (raw === undefined) {
-            this.disableMessageFeedback(state);
-            return;
-        }
-        const result = normalizeMessageFeedbackPutResult(raw);
-        if (!result) throw new Error(t("Harness returned an invalid messageFeedback.put result."));
-        if (result.ok) {
-            if (result.value.messageId !== request.messageId) {
-                throw new Error(t("Harness returned an invalid messageFeedback.put result."));
-            }
-            state.status = "ready";
-            state.items.set(result.value.messageId, result.value);
-            state.error = undefined;
-            return;
-        }
-        if (result.error.code === "session-not-found") {
-            this.disableMessageFeedback(state);
-            return;
-        }
-        if (result.error.code === "version-conflict") {
-            if (result.error.current === null || result.error.current === undefined) {
-                state.items.delete(request.messageId);
-            } else {
-                if (result.error.current.messageId !== request.messageId) {
-                    throw new Error(t("Harness returned an invalid messageFeedback.put result."));
-                }
-                state.items.set(request.messageId, result.error.current);
-            }
-        }
-        throw new Error(this.messageFeedbackFailure(result.error.code));
-    }
-
-    /** Apply one delete response and reconcile a lost CAS race from its authority. */
-    private async applyMessageFeedbackDelete(
-        state: MessageFeedbackSessionState,
-        request: DshMessageFeedbackDeleteRequest,
-    ): Promise<void> {
-        const raw = await this.runtime.deleteMessageFeedback(request);
-        if (raw === undefined) {
-            this.disableMessageFeedback(state);
-            return;
-        }
-        const result = normalizeMessageFeedbackDeleteResult(raw);
-        if (!result) throw new Error(t("Harness returned an invalid messageFeedback.delete result."));
-        if (result.ok) {
-            state.status = "ready";
-            state.items.delete(request.messageId);
-            state.error = undefined;
-            return;
-        }
-        if (result.error.code === "session-not-found") {
-            this.disableMessageFeedback(state);
-            return;
-        }
-        if (result.error.code === "version-conflict") {
-            if (result.error.current === null || result.error.current === undefined) {
-                state.items.delete(request.messageId);
-            } else {
-                if (result.error.current.messageId !== request.messageId) {
-                    throw new Error(t("Harness returned an invalid messageFeedback.delete result."));
-                }
-                state.items.set(request.messageId, result.error.current);
-            }
-        }
-        throw new Error(this.messageFeedbackFailure(result.error.code));
-    }
-
-    private async toggleMessageFeedback(
-        messageId: string,
-        requested: DshMessageFeedbackRating,
-    ): Promise<void> {
-        const sessionId = this.sessionId;
-        if (!sessionId || !hasAssistantFeedbackTarget(this.runtime.getSessionStore().get(sessionId), messageId)) {
-            return;
-        }
-        return this.enqueueMessageFeedback(sessionId, messageId, async (state) => {
-            const current = state.items.get(messageId);
-            if (current?.rating === requested) {
-                await this.applyMessageFeedbackDelete(state, {
-                    sessionId,
-                    messageId,
-                    ifVersion: current.version,
-                });
-                return;
-            }
-            await this.applyMessageFeedbackPut(state, {
-                sessionId,
-                messageId,
-                rating: requested,
-                ...(current?.note === undefined ? {} : { note: current.note }),
-                ifVersion: current?.version ?? null,
-            });
-        });
-    }
-
-    private async saveMessageFeedbackNote(messageId: string, note: string): Promise<void> {
-        const sessionId = this.sessionId;
-        if (!sessionId || !hasAssistantFeedbackTarget(this.runtime.getSessionStore().get(sessionId), messageId)) {
-            return;
-        }
-        return this.enqueueMessageFeedback(sessionId, messageId, async (state) => {
-            const current = state.items.get(messageId);
-            if (!current) return;
-            await this.applyMessageFeedbackPut(state, {
-                sessionId,
-                messageId,
-                rating: current.rating,
-                ...(note.trim().length === 0 ? {} : { note }),
-                ifVersion: current.version,
-            });
-        });
-    }
-
-    private messageFeedbackView(sessionId: string | undefined): DshMessageFeedbackStateView | undefined {
-        if (!sessionId || !this.runtime.getUrl()) return undefined;
-        const state = this.messageFeedbackStates.get(sessionId);
-        if (!state || state.status === "unavailable") return undefined;
-        const items = Object.create(null) as Record<string, DshMessageFeedbackItem>;
-        for (const [messageId, item] of state.items) items[messageId] = item;
-        const pending = Object.create(null) as Record<string, true>;
-        for (const messageId of state.pending) pending[messageId] = true;
-        const errors = Object.create(null) as Record<string, string>;
-        for (const [messageId, error] of state.errors) errors[messageId] = error;
-        return {
-            status: state.status,
-            items,
-            pending,
-            errors,
-            ...(state.error === undefined ? {} : { error: state.error }),
-        };
-    }
-
-    /** Attach stable wire ids and sidecar state to the root chat messages only. */
-    private decorateMessageFeedback(
-        messages: readonly ChatMessage[],
-        snapshot: SessionStateSnapshot | undefined,
-        state: MessageFeedbackSessionState | undefined,
-    ): ChatMessage[] {
-        return messages.map((message) => {
-            if (message.role !== "assistant" || message.state !== "committed") return message;
-            const messageId = assistantFeedbackMessageId(snapshot, message.seq);
-            if (!messageId) return message;
-            if (!state || state.status === "unavailable") return { ...message, messageId };
-            const item = state.items.get(messageId);
-            const error = state.errors.get(messageId);
-            return {
-                ...message,
-                messageId,
-                feedback: {
-                    status: state.status,
-                    ...(item?.rating === undefined ? {} : { rating: item.rating }),
-                    ...(item?.note === undefined ? {} : { note: item.note }),
-                    ...(state.pending.has(messageId) ? { pending: true } : {}),
-                    ...(error === undefined ? {} : { error }),
-                },
-            };
-        });
-    }
-
-    private subagentTimingMap(
-        catalogs: ReadonlyMap<string, DshSubagentCatalog>,
-    ): Map<string, SubagentTimingView> {
-        const catalog = this.runtime.getSessionCatalog().snapshot();
-        const summaries = new Map(catalog.sessions.map((item) => [item.sessionId, item] as const));
-        const timings = new Map<string, SubagentTimingView>();
-        for (const childCatalog of catalogs.values()) {
-            for (const entry of childCatalog.entries) {
-                if (entry.kind !== "child") continue;
-                const snapshot = this.runtime.getSessionStore().get(entry.id);
-                const local = normalizeSubagentTiming(
-                    projectionValue(snapshot, "subagentTiming"),
-                );
-                const summary = summaries.get(entry.id);
-                const listed = normalizeSubagentTiming(
-                    summary?.projections?.values.subagentTiming,
-                );
-                // Attached sessions receive live projection frames through the mux; a cold
-                // child has no SessionStore row, so its session.list projection is the
-                // available baseline. During an initial history repair, retain that baseline
-                // until the store has a complete cut.
-                const timing = local ?? (!snapshot || snapshot.needsHistoryBaseline ? listed : undefined);
-                if (timing !== undefined) timings.set(entry.id, timing);
-            }
-        }
-        return timings;
-    }
-
-    private observeSubagentTiming(
-        sessionId: string,
-        snapshot: SessionStateSnapshot,
-    ): boolean {
-        const rootSessionId = this.sessionId;
-        if (!rootSessionId || sessionId === rootSessionId) return false;
-        const tree = this.subagentTrees.get(rootSessionId);
-        if (!tree?.nodes.some((node) => node.kind === "child" && node.id === sessionId)) {
-            return false;
-        }
-        const timing = normalizeSubagentTiming(projectionValue(snapshot, "subagentTiming"));
-        const changed = this.subagentTrees.updateTiming(rootSessionId, sessionId, timing);
-        if (
-            changed &&
-            this.subagentPreview?.rootSessionId === rootSessionId &&
-            this.subagentPreview.childSessionId === sessionId
-        ) {
-            this.subagentPreview = { ...this.subagentPreview, timing };
-        }
-        return changed;
-    }
-
-    private async refreshSubagentTree(rootSessionId: string): Promise<void> {
-        this.subagentTreeAborts.get(rootSessionId)?.abort();
-        const controller = new AbortController();
-        this.subagentTreeAborts.set(rootSessionId, controller);
-        const generation = this.subagentTrees.begin(rootSessionId);
-        if (rootSessionId === this.sessionId) this.postState();
-
-        try {
-            const catalogs = new Map<string, DshSubagentCatalog>();
-            const pending = [rootSessionId];
-            const visited = new Set<string>();
-            while (pending.length > 0) {
-                const parentSessionId = pending.shift();
-                if (!parentSessionId || visited.has(parentSessionId)) continue;
-                visited.add(parentSessionId);
-                const raw = await this.runtime.listSubagents(parentSessionId, controller.signal);
-                const catalog = normalizeSubagentCatalog(raw);
-                if (!catalog) {
-                    throw new Error(t("Harness returned an invalid subagent.list for {sessionId}.", { sessionId: parentSessionId }));
-                }
-                catalogs.set(parentSessionId, catalog);
-                for (const entry of catalog.entries) {
-                    if (entry.kind === "child" && entry.hasChildren && !visited.has(entry.id)) {
-                        pending.push(entry.id);
-                    }
-                }
-            }
-            const applied = this.subagentTrees.resolve(
-                rootSessionId,
-                generation,
-                catalogs,
-                this.subagentTimingMap(catalogs),
-            );
-            if (applied && this.subagentPreview?.rootSessionId === rootSessionId) {
-                const refreshed = this.subagentTrees
-                    .get(rootSessionId)
-                    ?.nodes.find(
-                        (node) =>
-                            node.kind === "child" &&
-                            node.id === this.subagentPreview?.childSessionId,
-                    );
-                if (
-                    refreshed &&
-                    (refreshed.mode === "one-shot" || refreshed.mode === "continuable") &&
-                    (refreshed.activity === "running" || refreshed.activity === "inactive")
-                ) {
-                    this.subagentPreview = {
-                        ...this.subagentPreview,
-                        label: refreshed.label ?? refreshed.id,
-                        mode: refreshed.mode,
-                        activity: refreshed.activity,
-                        parentAvailable: refreshed.parentAvailable,
-                        timing: refreshed.timing,
-                    };
-                } else {
-                    this.subagentPreview = {
-                        ...this.subagentPreview,
-                        state: "error",
-                        error: t("This subagent is no longer in the current official catalog."),
-                    };
-                }
-            }
-        } catch (error) {
-            if (!controller.signal.aborted) {
-                this.subagentTrees.fail(rootSessionId, generation, errorMessage(error));
-            }
-        } finally {
-            if (this.subagentTreeAborts.get(rootSessionId) === controller) {
-                this.subagentTreeAborts.delete(rootSessionId);
-            }
-            if (rootSessionId === this.sessionId) this.postState();
-        }
-    }
-
-    private selectedSubagent(childSessionId: string): SubagentTreeNodeView | undefined {
-        const rootSessionId = this.sessionId;
-        if (!rootSessionId) return undefined;
-        const matches = this.subagentTrees
-            .get(rootSessionId)
-            ?.nodes.filter((node) => node.kind === "child" && node.id === childSessionId) ?? [];
-        return matches.length === 1 ? matches[0] : undefined;
-    }
-
-    private subagentAddress(node: SubagentTreeNodeView): DshSubagentAddress | undefined {
-        if (node.kind !== "child" || (node.mode !== "one-shot" && node.mode !== "continuable")) {
-            return undefined;
-        }
-        return {
-            parentSessionId: node.parentSessionId,
-            childSessionId: node.id,
-            mode: node.mode,
-        };
-    }
-
-    private async readCompleteSubagentHistory(
-        address: DshSubagentAddress,
-        signal: AbortSignal,
-    ) {
-        const tail = await this.runtime.subagentHistory(address, undefined, 100, signal);
-        const pages = [tail.events];
-        let hasMore = tail.hasMore;
-        let beforeSeq = lowestEventSeq(tail.events);
-        while (hasMore) {
-            if (beforeSeq === undefined || beforeSeq <= 0) {
-                throw new Error(t("Subagent {sessionId} history pagination did not provide an earlier seq.", { sessionId: address.childSessionId }));
-            }
-            const page = await this.runtime.subagentHistory(address, beforeSeq, 100, signal);
-            pages.push(page.events);
-            const nextBeforeSeq = lowestEventSeq(page.events);
-            if (page.hasMore && (nextBeforeSeq === undefined || nextBeforeSeq >= beforeSeq)) {
-                throw new Error(t("Subagent {sessionId} history pagination did not advance.", { sessionId: address.childSessionId }));
-            }
-            beforeSeq = nextBeforeSeq;
-            hasMore = page.hasMore;
-        }
-        return {
-            events: pages.flat(),
-            hasMore: false,
-            ...(tail.projections === undefined ? {} : { projections: tail.projections }),
-        };
-    }
-
-    private async openSubagentHistory(childSessionId: string): Promise<void> {
-        const rootSessionId = this.sessionId;
-        const node = this.selectedSubagent(childSessionId);
-        const address = node && this.subagentAddress(node);
-        if (
-            !rootSessionId ||
-            !node ||
-            !address ||
-            (node.activity !== "running" && node.activity !== "inactive")
-        ) return;
-
-        this.subagentPreviewAbort?.abort();
-        const controller = new AbortController();
-        this.subagentPreviewAbort = controller;
-        const generation = ++this.subagentPreviewGeneration;
-        this.subagentPreview = {
-            rootSessionId,
-            childSessionId,
-            label: node.label ?? childSessionId,
-            mode: address.mode,
-            parentAvailable: node.parentAvailable,
-            activity: node.activity,
-            ...(node.timing === undefined ? {} : { timing: node.timing }),
-            state: "loading",
-            messages: [],
-        };
-        this.postState();
-
-        try {
-            const history = await this.readCompleteSubagentHistory(address, controller.signal);
-            if (
-                controller.signal.aborted ||
-                generation !== this.subagentPreviewGeneration ||
-                rootSessionId !== this.sessionId
-            ) return;
-            const timing = normalizeSubagentTiming(history.projections?.values.subagentTiming) ?? node.timing;
-            this.subagentPreview = {
-                ...this.subagentPreview,
-                rootSessionId,
-                childSessionId,
-                label: node.label ?? childSessionId,
-                mode: address.mode,
-                parentAvailable: node.parentAvailable,
-                activity: node.activity,
-                ...(timing === undefined ? {} : { timing }),
-                state: "ready",
-                messages: projectSubagentHistory(childSessionId, history),
-            };
-        } catch (error) {
-            if (
-                !controller.signal.aborted &&
-                generation === this.subagentPreviewGeneration &&
-                rootSessionId === this.sessionId
-            ) {
-                this.subagentPreview = {
-                    ...this.subagentPreview,
-                    rootSessionId,
-                    childSessionId,
-                    label: node.label ?? childSessionId,
-                    mode: address.mode,
-                    parentAvailable: node.parentAvailable,
-                    activity: node.activity,
-                    state: "error",
-                    messages: [],
-                    error: errorMessage(error),
-                };
-            }
-        } finally {
-            if (this.subagentPreviewAbort === controller) this.subagentPreviewAbort = undefined;
-            if (rootSessionId === this.sessionId) this.postState();
-        }
-    }
-
-    private closeSubagentHistory(): void {
-        this.discardSubagentPreview();
-        this.postState();
-    }
-
-    private discardSubagentPreview(): void {
-        this.subagentPreviewAbort?.abort();
-        this.subagentPreviewAbort = undefined;
-        this.subagentPreviewGeneration += 1;
-        this.subagentPreview = undefined;
-    }
-
-    private async followUpSubagent(childSessionId: string, text: string): Promise<void> {
-        const rootSessionId = this.sessionId;
-        const node = this.selectedSubagent(childSessionId);
-        const preview = this.subagentPreview;
-        if (
-            !rootSessionId ||
-            !node ||
-            node.mode !== "continuable" ||
-            !node.parentAvailable ||
-            !preview ||
-            preview.rootSessionId !== rootSessionId ||
-            preview.childSessionId !== childSessionId ||
-            preview.pendingAction
-        ) return;
-        const previewGeneration = this.subagentPreviewGeneration;
-        this.subagentPreview = { ...preview, pendingAction: "follow-up", error: undefined };
-        this.postState();
-        try {
-            const result = await this.runtime.promptSubagent({
-                parentSessionId: node.parentSessionId,
-                childSessionId,
-                mode: "continuable",
-            }, text);
-            if (typeof result.messageId !== "string") {
-                throw new Error(t("Harness returned an invalid subagent.prompt acknowledgement."));
-            }
-            await this.refreshSubagentTree(rootSessionId);
-            if (
-                this.sessionId === rootSessionId &&
-                this.subagentPreviewGeneration === previewGeneration &&
-                this.subagentPreview?.childSessionId === childSessionId
-            ) await this.openSubagentHistory(childSessionId);
-        } catch (error) {
-            if (this.sessionId === rootSessionId && this.subagentPreview?.childSessionId === childSessionId) {
-                this.subagentPreview = {
-                    ...this.subagentPreview,
-                    pendingAction: undefined,
-                    error: errorMessage(error),
-                };
-                this.postState();
-            }
-        }
-    }
-
-    private async interruptSubagent(childSessionId: string): Promise<void> {
-        const rootSessionId = this.sessionId;
-        const node = this.selectedSubagent(childSessionId);
-        const preview = this.subagentPreview;
-        if (
-            !rootSessionId ||
-            !node ||
-            node.mode !== "continuable" ||
-            !preview ||
-            preview.rootSessionId !== rootSessionId ||
-            preview.childSessionId !== childSessionId ||
-            preview.pendingAction
-        ) return;
-        const previewGeneration = this.subagentPreviewGeneration;
-        this.subagentPreview = { ...preview, pendingAction: "interrupt", error: undefined };
-        this.postState();
-        try {
-            const result = await this.runtime.interruptSubagent({
-                parentSessionId: node.parentSessionId,
-                childSessionId,
-                mode: "continuable",
-            });
-            if (result.accepted !== true) {
-                throw new Error(t("Harness returned an invalid subagent.interrupt acknowledgement."));
-            }
-            await this.refreshSubagentTree(rootSessionId);
-            if (
-                this.sessionId === rootSessionId &&
-                this.subagentPreviewGeneration === previewGeneration &&
-                this.subagentPreview?.childSessionId === childSessionId
-            ) await this.openSubagentHistory(childSessionId);
-        } catch (error) {
-            if (this.sessionId === rootSessionId && this.subagentPreview?.childSessionId === childSessionId) {
-                this.subagentPreview = {
-                    ...this.subagentPreview,
-                    pendingAction: undefined,
-                    error: errorMessage(error),
-                };
-                this.postState();
-            }
         }
     }
 
@@ -2868,71 +2509,98 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     }
 
-    private invalidateModelCatalogs(): void {
-        this.modelCatalogs.clear();
-        for (const sessionId of this.modelCatalogRequests.keys()) {
-            this.modelCatalogRefreshPending.add(sessionId);
-            this.modelCatalogGenerations.set(
-                sessionId,
-                (this.modelCatalogGenerations.get(sessionId) ?? 0) + 1,
-            );
+    /**
+     * Keep the visible model route aligned with the authoritative RC
+     * modelSelection projection.  A model can be changed by another client or
+     * by an agent, so waiting for the next local selectModel action leaves the
+     * status bar and reasoning-effort control stale.
+     */
+    private observeModelSelection(
+        sessionId: string,
+        snapshot: SessionStateSnapshot,
+    ): void {
+        const cell = projectionCell(snapshot, "modelSelection");
+        if (!cell || this.modelSelectionProjectionSeqs.get(sessionId) === cell.seq) return;
+        this.modelSelectionProjectionSeqs.set(sessionId, cell.seq);
+
+        const selection = normalizeModelSelectionProjection(cell.value);
+        if (!selection) return;
+
+        const catalog = this.modelCatalogs.get(sessionId);
+        const reasoningEfforts = catalog
+            ? reasoningEffortOptions(catalog, selection.provider, selection.model)
+            : undefined;
+        const previous = this.selectedModels.get(sessionId);
+        this.selectedModels.set(sessionId, {
+            selection,
+            asOfSeq: cell.seq,
+            ...(reasoningEfforts === undefined ? {} : { reasoningEfforts }),
+        });
+        if (catalog && !sameModelSelection(catalog.current, selection)) {
+            this.modelCatalogs.set(sessionId, { ...catalog, current: selection });
+        }
+        if (!previous ||
+            !sameModelSelection(previous.selection, selection) ||
+            previous.asOfSeq !== cell.seq ||
+            (reasoningEfforts !== undefined &&
+                JSON.stringify(previous.reasoningEfforts ?? []) !== JSON.stringify(reasoningEfforts))) {
+            if (this.sessionId === sessionId) this.schedulePostState();
         }
     }
 
     private refreshModelCatalog(sessionId: string): void {
-        if (!this.runtime.getUrl() || this.modelCatalogs.has(sessionId) || this.modelCatalogRequests.has(sessionId)) {
-            return;
-        }
-        const generation = this.modelCatalogGenerations.get(sessionId) ?? 0;
-        const request = this.runtime.models(sessionId)
-            .then((catalog) => {
-                if (this.modelCatalogGenerations.get(sessionId) !== generation) return;
-                this.modelCatalogs.set(sessionId, catalog);
-                const efforts = reasoningEffortOptions(
-                    catalog,
-                    catalog.current.provider,
-                    catalog.current.model,
-                );
+        void this.modelCatalogs.pull(sessionId, {
+            gate: () => Boolean(this.runtime.getUrl()),
+            pull: () => this.runtime.models(sessionId),
+            apply: (catalog) => {
                 const selected = this.selectedModels.get(sessionId);
-                if (!selected ||
-                    (selected.selection.provider === catalog.current.provider &&
-                        selected.selection.model === catalog.current.model)) {
+                const projectionSelection = this.modelSelectionProjectionSeqs.has(sessionId)
+                    ? selected?.selection
+                    : undefined;
+                const current = projectionSelection ?? catalog.current;
+                const effectiveCatalog = sameModelSelection(current, catalog.current)
+                    ? catalog
+                    : { ...catalog, current };
+                this.modelCatalogs.set(sessionId, effectiveCatalog);
+                const efforts = reasoningEffortOptions(
+                    effectiveCatalog,
+                    current.provider,
+                    current.model,
+                );
+                if (!selected) {
                     this.selectedModels.set(sessionId, {
-                        selection: catalog.current,
+                        selection: current,
                         asOfSeq: highestKnownSeq(this.runtime.getSessionStore().get(sessionId)),
+                        reasoningEfforts: efforts,
+                    });
+                } else if (!sameModelSelection(selected.selection, current) ||
+                    JSON.stringify(selected.reasoningEfforts ?? []) !== JSON.stringify(efforts)) {
+                    this.selectedModels.set(sessionId, {
+                        ...selected,
+                        selection: current,
                         reasoningEfforts: efforts,
                     });
                 }
                 if (this.sessionId === sessionId) this.postState();
-            })
-            .catch((error) => {
+            },
+            fail: (error) => {
                 this.output.appendLine(`[dsh:model] catalog refresh failed: ${errorMessage(error)}`);
-            })
-            .finally(() => {
-                this.modelCatalogRequests.delete(sessionId);
-                if (this.modelCatalogRefreshPending.delete(sessionId)) {
-                    this.refreshModelCatalog(sessionId);
-                }
-            });
-        this.modelCatalogRequests.set(sessionId, request);
+            },
+        });
     }
 
     private refreshSkillCatalog(sessionId: string): void {
-        if (!this.runtime.getUrl() || this.skillCatalogs.has(sessionId) || this.skillCatalogRequests.has(sessionId)) {
-            return;
-        }
-        const request = this.runtime.listSkills(sessionId)
-            .then((skills) => {
+        void this.skillCatalogs.pull(sessionId, {
+            gate: () => Boolean(this.runtime.getUrl()),
+            pull: () => this.runtime.listSkills(sessionId),
+            apply: (skills) => {
                 this.skillCatalogs.set(sessionId, skills);
                 if (this.sessionId === sessionId) this.postState();
-            })
-            .catch((error) => {
+            },
+            fail: (error) => {
                 this.output.appendLine(`[dsh:skills] catalog refresh failed: ${errorMessage(error)}`);
-            })
-            .finally(() => {
-                this.skillCatalogRequests.delete(sessionId);
-            });
-        this.skillCatalogRequests.set(sessionId, request);
+            },
+        });
     }
 
     /**
@@ -3001,26 +2669,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
      * commands alone.
      */
     private refreshCommandCatalog(sessionId: string): void {
-        if (
-            !this.runtime.getUrl() ||
-            this.commandRegistryUnavailable ||
-            this.commandCatalogs.has(sessionId) ||
-            this.commandCatalogRequests.has(sessionId)
-        ) {
-            return;
-        }
         void this.ensureCommandCatalog(sessionId);
-    }
-
-    private invalidateCommandCatalogs(): void {
-        this.commandCatalogs.clear();
-        for (const sessionId of this.commandCatalogRequests.keys()) {
-            this.commandCatalogRefreshPending.add(sessionId);
-            this.commandCatalogGenerations.set(
-                sessionId,
-                (this.commandCatalogGenerations.get(sessionId) ?? 0) + 1,
-            );
-        }
     }
 
     /**
@@ -3029,41 +2678,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
      * freshly created session cannot leak `/compact` to the model just because
      * its catalog had not arrived yet.
      */
-    private async ensureCommandCatalog(sessionId: string): Promise<void> {
-        const pending = this.commandCatalogRequests.get(sessionId);
-        if (pending) return pending;
-        if (
-            !this.runtime.getUrl() ||
-            this.commandRegistryUnavailable ||
-            this.commandCatalogs.has(sessionId)
-        ) {
-            return;
-        }
-        const generation = this.commandCatalogGenerations.get(sessionId) ?? 0;
-        const request = this.runtime.listCommands(sessionId)
-            .then((commands) => {
-                if (this.commandCatalogGenerations.get(sessionId) !== generation) return;
-                if (commands === undefined) {
-                    this.commandRegistryUnavailable = true;
-                    this.output.appendLine(
-                        "[dsh:commands] the connected Runtime serves no command registry; using IDE commands only",
-                    );
-                    return;
-                }
+    private ensureCommandCatalog(sessionId: string): Promise<void> {
+        return this.commandCatalogs.pull(sessionId, {
+            gate: () => Boolean(this.runtime.getUrl()) && !this.commandRegistryUnavailable,
+            pull: () => this.runtime.listCommands(sessionId),
+            apply: (commands) => {
                 this.commandCatalogs.set(sessionId, commands);
                 if (this.sessionId === sessionId) this.postState();
-            })
-            .catch((error) => {
+            },
+            absent: () => {
+                this.commandRegistryUnavailable = true;
+                this.output.appendLine(
+                    "[dsh:commands] the connected Runtime serves no command registry; using IDE commands only",
+                );
+            },
+            fail: (error) => {
                 this.output.appendLine(`[dsh:commands] catalog refresh failed: ${errorMessage(error)}`);
-            })
-            .finally(() => {
-                this.commandCatalogRequests.delete(sessionId);
-                if (this.commandCatalogRefreshPending.delete(sessionId)) {
-                    this.refreshCommandCatalog(sessionId);
-                }
-            });
-        this.commandCatalogRequests.set(sessionId, request);
-        return request;
+            },
+        });
     }
 
     private invalidateAgentPresetCatalog(): void {
@@ -3224,6 +2856,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         const goalCell = projectionCell(session, "goal");
         const permissionsCell = projectionCell(session, "permissions");
         const todos = todoProjection(projectionValue(session, "todos"));
+        const schedule = scheduleProjection(projectionValue(session, "schedule"));
         const imageLimits = imageLimitsProjection(projectionValue(session, "imageLimits"));
         const plan = planProjection(projectionValue(session, "plan"));
         const sessionStats = sessionStatsProjection(projectionValue(session, "sessionStats"));
@@ -3243,6 +2876,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                 interaction.status === "unavailable" ||
                 interaction.status === "resolved",
         ) ?? [];
+        const subagentPreview = this.subagents.previewFor(this.sessionId);
         const state: ChatViewState = {
             messages: this.renderMessages(
                 projectedMessages,
@@ -3252,6 +2886,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             context: this.contextStore.snapshot(),
             fileReferenceCandidates: this.fileReferenceCandidates,
             ...(this.settingsPanel === undefined ? {} : { settings: this.settingsPanel }),
+            ...(this.dynamicPlugins === undefined ? {} : { dynamicPlugins: this.dynamicPlugins }),
             selection: this.contextStore.getCurrentSelectionMetadata(),
             selectionEnabled: this.selectionEnabled,
             status: this.runtime.getStatus(),
@@ -3317,6 +2952,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             reasoningEffort: this.reasoningEffortView(),
             permissions: permissionProjection(permissionsCell?.value),
             ...(todos === undefined ? {} : { todos }),
+            ...(schedule === undefined ? {} : { schedule }),
             ...(imageLimits === undefined ? {} : { imageLimits }),
             ...(plan === undefined ? {} : { plan }),
             interactions: activeInteractions.map((interaction) =>
@@ -3374,18 +3010,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             goal: this.sessionId
                 ? presentGoalHud(goalCell, this.goalMutations.snapshot(this.sessionId))
                 : undefined,
-            subagents: this.sessionId ? this.subagentTrees.get(this.sessionId) : undefined,
-            subagentPreview:
-                this.sessionId && this.subagentPreview?.rootSessionId === this.sessionId
-                    ? {
-                          ...this.subagentPreview,
-                          messages: this.renderMessages(
-                              this.subagentPreview.messages,
-                              `subagent:${this.subagentPreview.childSessionId}`,
-                              this.subagentPreview.childSessionId,
-                          ),
-                      }
-                    : undefined,
+            subagents: this.sessionId ? this.subagents.tree(this.sessionId) : undefined,
+            subagentPreview: subagentPreview
+                ? {
+                      ...subagentPreview,
+                      messages: this.renderMessages(
+                          subagentPreview.messages,
+                          `subagent:${subagentPreview.childSessionId}`,
+                          subagentPreview.childSessionId,
+                      ),
+                  }
+                : undefined,
             jobs: this.sessionId
                 ? presentJobCenter(this.sessionId, session?.jobs.items ?? [])
                 : [],
@@ -3475,8 +3110,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             message.images?.some((image) => image.attachmentId === attachmentId) === true ||
             message.tool?.images?.some((image) => image.attachmentId === attachmentId) === true,
         );
-        const preview = this.subagentPreview;
-        const referencedByPreview = preview?.rootSessionId === rootSessionId &&
+        const preview = this.subagents.previewFor(rootSessionId);
+        const referencedByPreview = preview !== undefined &&
             preview.messages.some((message) =>
                 message.images?.some((image) => image.attachmentId === attachmentId) === true ||
                 message.tool?.images?.some((image) => image.attachmentId === attachmentId) === true,
@@ -3484,7 +3119,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         const sessionId = referencedByRoot
             ? rootSessionId
             : referencedByPreview
-              ? preview.childSessionId
+              ? preview?.childSessionId
               : undefined;
         if (!sessionId) return;
 
@@ -3553,14 +3188,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             this.stateUpdateTimer = undefined;
             this.postState();
         }, 16);
-    }
-
-    private scheduleSubagentRefresh(): void {
-        if (this.subagentRefreshTimer || !this.sessionId || !this.runtime.getUrl()) return;
-        this.subagentRefreshTimer = setTimeout(() => {
-            this.subagentRefreshTimer = undefined;
-            if (this.sessionId) void this.refreshSubagentTree(this.sessionId);
-        }, 75);
     }
 
     private getHtml(webview: vscode.Webview): string {

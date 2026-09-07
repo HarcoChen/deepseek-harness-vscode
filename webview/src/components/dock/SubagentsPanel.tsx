@@ -116,7 +116,7 @@ function SubagentPreviewCard({ preview, now }: { preview: SubagentHistoryPreview
             {preview.error ? <div className="dsh-card-error">{preview.error}</div> : null}
             {preview.pendingAction ? <div className="dsh-card-detail">{t("Running {operation}...", { operation: preview.pendingAction })}</div> : null}
             {preview.messages.length ? (
-                <div className="dsh-subagent-transcript" onClick={(event) => handleMarkdownClick(event.target)} onKeyDown={handleMarkdownKeydown}>
+                <div className="dsh-subagent-transcript" tabIndex={0} onClick={(event) => handleMarkdownClick(event.target)} onKeyDown={handleMarkdownKeydown}>
                     {preview.messages.map((message) => (
                         <div
                             className={`dsh-message dsh-role-${message.role}`}

@@ -3,6 +3,7 @@ import { DshRuntime } from "./dshRuntime";
 import { ChatViewProvider } from "./chatView";
 import { StoredSessionEvent } from "./sessionStore";
 import { isRecord } from "./guards";
+import { t } from "./localize";
 
 export interface ConversationNavigationEntry {
     seq: number;
@@ -65,6 +66,64 @@ function userText(entry: StoredSessionEvent): string | undefined {
     return text || undefined;
 }
 
+interface TurnOutlineEntry {
+    turn: number;
+    seq: number;
+    prompt: string;
+    response: string;
+}
+
+/**
+ * Decode the wire view of the RC `turnOutline` projection.  The projection is
+ * optional (it depends on the Runtime composition), so malformed or absent
+ * data returns undefined and leaves the existing loaded-surface fallback in
+ * place.
+ */
+function turnOutlineEntries(value: unknown): TurnOutlineEntry[] | undefined {
+    if (!Array.isArray(value)) return undefined;
+    const byTurn = new Map<number, TurnOutlineEntry>();
+    for (const candidate of value) {
+        if (!isRecord(candidate) ||
+            typeof candidate.turn !== "number" ||
+            !Number.isSafeInteger(candidate.turn) ||
+            candidate.turn < 0 ||
+            typeof candidate.seq !== "number" ||
+            !Number.isSafeInteger(candidate.seq) ||
+            candidate.seq < 0 ||
+            Object.is(candidate.seq, -0)) {
+            continue;
+        }
+        byTurn.set(candidate.turn, {
+            turn: candidate.turn,
+            seq: candidate.seq,
+            prompt: typeof candidate.prompt === "string" ? candidate.prompt : "",
+            response: typeof candidate.response === "string" ? candidate.response : "",
+        });
+    }
+    return [...byTurn.values()].sort((left, right) => left.turn - right.turn);
+}
+
+function navigationPreview(value: string, limit = 96): string {
+    const normalized = value.replace(/\s+/gu, " ").trim();
+    return normalized.length <= limit ? normalized : `${normalized.slice(0, limit - 1)}…`;
+}
+
+function turnOutlineNavigationEntries(value: unknown): ConversationNavigationEntry[] | undefined {
+    const outline = turnOutlineEntries(value);
+    if (outline === undefined) return undefined;
+    return outline.map((entry) => {
+        const prompt = navigationPreview(entry.prompt);
+        const response = navigationPreview(entry.response);
+        return {
+            seq: entry.seq,
+            label: prompt || response || t("Turn {turn}", { turn: entry.turn }),
+            detail: response && prompt
+                ? t("Turn {turn} · {response}", { turn: entry.turn, response })
+                : t("Turn {turn} · #{seq}", { turn: entry.turn, seq: entry.seq }),
+        };
+    });
+}
+
 class ConversationNavigationItem extends vscode.TreeItem {
     public constructor(public readonly entry: ConversationNavigationEntry) {
         super(entry.label, vscode.TreeItemCollapsibleState.None);
@@ -111,16 +170,19 @@ export class ConversationNavigationProvider
         if (!sessionId) return [];
         const snapshot = this.runtime.getSessionStore().get(sessionId);
         if (!snapshot) return [];
-        const builtIn = snapshot.surface.nodes.flatMap((node) => {
+        const outline = turnOutlineNavigationEntries(
+            snapshot.projections.find((cell) => cell.key === "turnOutline")?.value,
+        );
+        const builtIn = (outline ?? snapshot.surface.nodes.flatMap((node) => {
             const text = userText(node);
             if (!text) return [];
             const firstLine = text.split(/\r?\n/u, 1)[0].trim();
-            return [new ConversationNavigationItem({
+            return [{
                 seq: node.seq,
                 label: firstLine.length > 96 ? `${firstLine.slice(0, 95)}…` : firstLine,
                 detail: `#${node.seq}`,
-            })];
-        });
+            } satisfies ConversationNavigationEntry];
+        })).map((entry) => new ConversationNavigationItem(entry));
         return [
             ...builtIn,
             ...(this.registry?.current() ?? []).map((entry) => new ConversationNavigationItem(entry)),

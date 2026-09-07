@@ -9,7 +9,7 @@ const packagePath = new URL("package.json", root);
 const lockPath = new URL("package-lock.json", root);
 const changelogPath = new URL("CHANGELOG.md", root);
 
-const REPO = "https://github.com/HarcoChen/deepseek-harness-vscode";
+const REPO = "https://github.com/HarcoChen/dsh-vsc-integration";
 
 function usage() {
     console.log(`Usage: npm run release -- <patch|minor|major|stable|x.y.z> [--push]
