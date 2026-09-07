@@ -103,12 +103,38 @@ jobs:
           PRERELEASE: ${{ steps.metadata.outputs.prerelease }}
         # `--pre-release` writes the marker into the vsix manifest itself, so
         # the flag survives packaging and publishing as one decision.
+        #
+        # Deliberately no `--no-dependencies`: the host code requires `ws` at
+        # runtime, and that flag makes vsce skip node_modules collection
+        # altogether, so the `!node_modules/ws/**` negations in .vscodeignore
+        # never apply. 0.7.0-beta.1 shipped that way and could not activate.
         run: |
           if [[ "${PRERELEASE}" == "true" ]]; then
-            npm run package -- --no-dependencies --pre-release
+            npm run package -- --pre-release
           else
-            npm run package -- --no-dependencies
+            npm run package
           fi
+
+      - name: Verify runtime dependencies are bundled
+        shell: bash
+        env:
+          VSIX: ${{ steps.metadata.outputs.vsix }}
+        # A dependency missing from the package only fails at activation, where
+        # it looks like the extension hanging on load rather than an error.
+        # Fail the release instead of publishing an unloadable build.
+        run: |
+          missing=0
+          for dep in $(node -p "Object.keys(require('./package.json').dependencies ?? {}).join(' ')"); do
+            if ! unzip -l "${VSIX}" | grep -q "extension/node_modules/${dep}/package.json"; then
+              echo "Runtime dependency '${dep}' is missing from ${VSIX}." >&2
+              missing=1
+            fi
+          done
+          if [[ "${missing}" != "0" ]]; then
+            echo "Check .vscodeignore negations and that packaging does not pass --no-dependencies." >&2
+            exit 1
+          fi
+          echo "All declared runtime dependencies are present in ${VSIX}."
 
       - name: Publish to Open VSX
         shell: bash
