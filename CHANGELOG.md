@@ -9,6 +9,16 @@
 
 <!-- 在这里填写下一版本的发布说明；npm run release 会自动提升这一节。 -->
 
+本版本是 `0.7.0-beta.1` 那批功能的第一个**可安装**构建：`0.7.0-beta.1` 的 vsix 漏了运行时依赖，装上后必然卡在加载，该版本已从 Open VSX 撤回。完整的功能与协议变更见下方 `0.7.0-beta.1` 条目。
+
+### ⚠️ 破坏性变更
+
+沿续 `0.7.0-beta.1`：整体切换到 `dsh 0.1.2-rc.1` 的 RC Remote 协议，旧 ApiProxy 协议已删除，**不保留向后兼容路径**。**必须升级 dsh Runtime**——`0.1.1-rc.2` 及更早不再可用，连接旧 Runtime 会报「未暴露 RC Remote RPC」且不降级；托管 Runtime 默认 pin 为 `0.1.2-rc.1`，首启会下载，预览版之间存储格式可能不兼容。手动配置 `dsh.serverUrl` 的用户需同步升级那个 `dsh web` 实例。详见下方 `0.7.0-beta.1` 条目。
+
+### 修复
+
+- 修复安装后卡在加载：`dist/remote/muxClient.js` 在模块加载时 `require("ws")`，而 `0.7.0-beta.1` 的 vsix 里一个 `node_modules` 文件都没有——打包步骤的 `--no-dependencies` 会让 vsce 完全跳过 node_modules 收集，`.vscodeignore` 中 `!node_modules/ws/**` 的负向规则因此失效。`ws` 解析失败会让承载所有 RC Remote 逻辑流的 mux WebSocket 无法建立，且运行时不报错、只表现为界面停在加载。打包不再传该参数，并新增发布门禁：逐个核对 `package.json` 声明的运行时依赖是否真的进了 vsix，缺失即让发布失败。
+
 ### 变更
 
 - 版本号改用奇偶 minor 分流：`0.8.0` 起正式版走偶数 minor（`0.8.x`），预发布走更高的奇数 minor（`0.9.x`）。发布流水线按同一规则决定是否以 `--pre-release` 打包发布，`npm run release` 也会在动手前打印解析出的通道。客户端总是升到版本号最高的那个、不看通道，因此让预发布号始终高于所有正式版号，才能保证正式版发布不会把尝鲜用户拽出预发布通道。带 SemVer 预发布后缀的版本（如 `0.7.0-beta.1`）仍按预发布处理，但这类版本号 VS Code Marketplace 不接受，只能进 Open VSX 与 GitHub Releases。
