@@ -2,7 +2,7 @@
     "name": "dsh-vsc-integration",
     "displayName": "%extension.displayName%",
     "description": "%extension.description%",
-    "version": "0.6.2",
+    "version": "0.7.0-beta.1",
     "publisher": "harcochen",
     "license": "MIT",
     "repository": {
