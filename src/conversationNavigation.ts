@@ -3,6 +3,7 @@ import { DshRuntime } from "./dshRuntime";
 import { ChatViewProvider } from "./chatView";
 import { StoredSessionEvent } from "./sessionStore";
 import { isRecord } from "./guards";
+import { t } from "./localize";
 
 export interface ConversationNavigationEntry {
     seq: number;
@@ -115,10 +116,10 @@ function turnOutlineNavigationEntries(value: unknown): ConversationNavigationEnt
         const response = navigationPreview(entry.response);
         return {
             seq: entry.seq,
-            label: prompt || response || `Turn ${entry.turn}`,
+            label: prompt || response || t("Turn {turn}", { turn: entry.turn }),
             detail: response && prompt
-                ? `Turn ${entry.turn} · ${response}`
-                : `Turn ${entry.turn} · #${entry.seq}`,
+                ? t("Turn {turn} · {response}", { turn: entry.turn, response })
+                : t("Turn {turn} · #{seq}", { turn: entry.turn, seq: entry.seq }),
         };
     });
 }

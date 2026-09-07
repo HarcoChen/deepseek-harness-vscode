@@ -41,7 +41,7 @@ export function SchedulePanel({ schedule }: { schedule: NonNullable<ChatViewStat
     return (
         <div className="dsh-schedule" aria-label={t("Active reminders")}>
             <div className="dsh-card-detail">{t("Active reminders · read-only")}</div>
-            <ul className="dsh-schedule-items">
+            <ul className="dsh-schedule-items" tabIndex={0}>
                 {schedule.map((item) => (
                     <li className="dsh-schedule-item" key={item.id}>
                         <div className="dsh-schedule-prompt">{item.prompt}</div>

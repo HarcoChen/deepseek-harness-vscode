@@ -72,7 +72,7 @@ export const ActivityDock = React.memo(function ActivityDock({
     if (subagents && sessionId) {
         tabs.push({ id: "subagents", label: t("Subagents"), count: subagents.nodes.length || undefined });
     }
-    if (jobs.length) tabs.push({ id: "jobs", label: "Jobs", count: jobs.length });
+    if (jobs.length) tabs.push({ id: "jobs", label: t("Jobs"), count: jobs.length });
     if (schedule?.length) tabs.push({ id: "schedule", label: t("Schedule"), count: schedule.length });
     if (permissions) tabs.push({ id: "permissions", label: t("Permissions") });
     if (dynamicPlugins && (dynamicPlugins.loading || dynamicPlugins.error !== undefined || dynamicPlugins.rows.length > 0)) {

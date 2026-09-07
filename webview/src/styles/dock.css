@@ -303,6 +303,16 @@
     overflow-wrap: anywhere;
 }
 
+/* Scroll containers whose children are plain text are unreachable by keyboard
+   unless the container itself takes focus; these carry tabIndex={0}. */
+.dsh-goal-error-detail pre:focus-visible,
+.dsh-subagent-transcript:focus-visible,
+.dsh-schedule-items:focus-visible,
+.dsh-todo-items:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 2px;
+}
+
 /* schedule */
 
 .dsh-schedule-items {

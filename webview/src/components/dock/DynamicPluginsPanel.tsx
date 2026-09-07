@@ -62,6 +62,7 @@ function DynamicPluginRow({ row }: { row: DshDynamicPluginRow }): React.JSX.Elem
         ...(latest?.client.waitingFor ?? []).map((service) => `Client: ${service}`),
     ];
     const [expanded, setExpanded] = useState(false);
+    const [confirmingRemoval, setConfirmingRemoval] = useState(false);
     return (
         <li className={`dsh-dynamic-plugin-row ${status}`}>
             <div className="dsh-dynamic-plugin-row-head">
@@ -116,17 +117,33 @@ function DynamicPluginRow({ row }: { row: DshDynamicPluginRow }): React.JSX.Elem
                         {t("Stop plugin")}
                     </button>
                 ) : null}
-                <button
-                    type="button"
-                    className="danger"
-                    onClick={() => {
-                        if (window.confirm(t("Remove dynamic plugin {pluginId}?", { pluginId: row.pluginId }))) {
-                            postAction({ type: "removeDynamicPlugin", sessionId: row.agentId, pluginId: row.pluginId });
-                        }
-                    }}
-                >
-                    {t("Remove plugin")}
-                </button>
+                {/* Webview iframes run without `allow-modals`, so `window.confirm`
+                    resolves to false and would silently swallow the removal.
+                    The confirmation is rendered inline instead. */}
+                {confirmingRemoval ? (
+                    <>
+                        <span className="dsh-dynamic-plugin-confirm" role="status">
+                            {t("Remove dynamic plugin {pluginId}?", { pluginId: row.pluginId })}
+                        </span>
+                        <button
+                            type="button"
+                            className="danger"
+                            onClick={() => {
+                                setConfirmingRemoval(false);
+                                postAction({ type: "removeDynamicPlugin", sessionId: row.agentId, pluginId: row.pluginId });
+                            }}
+                        >
+                            {t("Confirm")}
+                        </button>
+                        <button type="button" onClick={() => setConfirmingRemoval(false)}>
+                            {t("Cancel")}
+                        </button>
+                    </>
+                ) : (
+                    <button type="button" className="danger" onClick={() => setConfirmingRemoval(true)}>
+                        {t("Remove plugin")}
+                    </button>
+                )}
                 <button type="button" className="dsh-dynamic-plugin-toggle" onClick={() => setExpanded((value) => !value)}>
                     {expanded ? t("Hide details") : t("View details")}
                 </button>

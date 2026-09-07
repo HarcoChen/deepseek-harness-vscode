@@ -40,6 +40,20 @@ function decodeHead(bytes: Uint8Array): string {
     return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
+/**
+ * `workspace.fs.readFile` has no byte-range form and returns the whole file, so
+ * every size cap has to be enforced from `stat` before the read happens.
+ * A size that cannot be resolved is reported as `undefined`, leaving the caller
+ * to fall back on its own post-read check.
+ */
+async function templateByteLength(file: vscode.Uri): Promise<number | undefined> {
+    try {
+        return (await vscode.workspace.fs.stat(file)).size;
+    } catch {
+        return undefined;
+    }
+}
+
 /** Frontmatter `title:` wins, then the first `#` heading, then the file stem. */
 function templateTitle(head: string, stem: string): { title: string; preview: string } {
     const lines = head.split(/\r?\n/u);
@@ -111,6 +125,8 @@ export async function listPromptTemplates(promptsRoot: vscode.Uri): Promise<Prom
             file.path.slice(promptsRoot.path.length + 1).replace(/\\/gu, "/"),
         );
         if (relative === undefined) continue;
+        const size = await templateByteLength(file);
+        if (size !== undefined && size > MAX_TEMPLATE_BYTES) continue;
         let head: string;
         try {
             head = decodeHead(await vscode.workspace.fs.readFile(file));
@@ -135,15 +151,16 @@ export async function readPromptTemplate(
     if (relative === undefined) {
         throw new Error(t("Not a usable prompt template path: {path}.", { path: relativePath }));
     }
-    const bytes = await vscode.workspace.fs.readFile(
-        vscode.Uri.joinPath(promptsRoot, ...relative.split("/")),
-    );
-    if (bytes.byteLength > MAX_TEMPLATE_BYTES) {
-        throw new Error(t(
-            "This prompt template is too large to insert ({limit} KiB limit).",
-            { limit: MAX_TEMPLATE_BYTES / 1024 },
-        ));
-    }
+    const file = vscode.Uri.joinPath(promptsRoot, ...relative.split("/"));
+    const tooLarge = () => new Error(t(
+        "This prompt template is too large to insert ({limit} KiB limit).",
+        { limit: MAX_TEMPLATE_BYTES / 1024 },
+    ));
+    const size = await templateByteLength(file);
+    if (size !== undefined && size > MAX_TEMPLATE_BYTES) throw tooLarge();
+    const bytes = await vscode.workspace.fs.readFile(file);
+    // Backstop for filesystems whose `stat` size cannot be trusted.
+    if (bytes.byteLength > MAX_TEMPLATE_BYTES) throw tooLarge();
     const text = new TextDecoder("utf-8").decode(bytes);
     return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }

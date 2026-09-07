@@ -1015,6 +1015,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             // rendered message. Rebaseline once so an unloaded turn can still
             // resolve to its first visible surface node before scrolling.
             await this.runtime.syncSession(sessionId);
+            // The user can switch sessions across the await; resolving against
+            // the new session's snapshot would reveal an unrelated message.
+            if (this.sessionId !== sessionId) return;
             targetSeq = this.conversationRevealTarget(seq);
         }
         if (!this.view || !this.webviewReady) return;

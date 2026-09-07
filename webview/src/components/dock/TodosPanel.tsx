@@ -23,7 +23,7 @@ export function TodosPanel({ todos }: { todos: readonly DshTodoItemView[] }): Re
     return (
         <div className="dsh-todos" aria-label={t("Todo list")}>
             <div className="dsh-todos-progress">{progressLabel(todos)}</div>
-            <ul className="dsh-todo-items">
+            <ul className="dsh-todo-items" tabIndex={0}>
                 {/* DshTodoItemView carries no id, and the host does not guarantee
                     distinct content, so position is the only stable identity here.
                     The list is a wholesale-replaced projection with no per-row state,

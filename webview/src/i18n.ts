@@ -355,6 +355,7 @@ const ZH_CN: Readonly<Record<string, string>> = {
     " · current": " · 当前",
     "Permission changes are handled by the public command in the Harness Web UI.": "权限切换由 Harness Web UI 的公开 command 负责。",
     "Subagents": "子代理",
+    "Jobs": "任务",
     "Permissions": "权限",
     "Subagent Tree": "Subagent 树",
     "has children": "有子项",

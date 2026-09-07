@@ -712,8 +712,7 @@ button {
 .dsh-dynamic-plugin-meta,
 .dsh-dynamic-plugin-facts,
 .dsh-dynamic-plugin-waiting,
-.dsh-dynamic-plugin-details,
-.dsh-dynamic-plugin-approval {
+.dsh-dynamic-plugin-details {
     color: var(--vscode-descriptionForeground);
     font-size: var(--dsh-font-xs);
 }
@@ -754,7 +753,7 @@ button {
 }
 
 .dsh-dynamic-plugin-row.awaiting-approval {
-    border-color: var(--vscode-charts-yellow);
+    border-color: var(--dsh-status-warning);
 }
 
 .dsh-dynamic-plugin-row.failed {
@@ -812,10 +811,19 @@ button {
     font-size: inherit;
 }
 
+/* charts-* tokens are data-visualization colors with no text-contrast
+   guarantee; this is status text, so it uses the warning foreground. */
 .dsh-dynamic-plugin-approval {
     padding: var(--dsh-space-1) var(--dsh-space-2);
-    border-left: 3px solid var(--vscode-charts-yellow);
-    color: var(--vscode-charts-yellow);
+    border-left: 3px solid var(--dsh-status-warning);
+    color: var(--dsh-status-warning);
+    font-size: var(--dsh-font-xs);
+}
+
+.dsh-dynamic-plugin-confirm {
+    color: var(--dsh-status-warning);
+    font-size: var(--dsh-font-xs);
+    align-self: center;
 }
 
 .dsh-dynamic-plugin-actions {

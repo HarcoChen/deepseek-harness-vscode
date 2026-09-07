@@ -330,6 +330,32 @@ export class SubagentController {
         this.preview = undefined;
     }
 
+    /**
+     * Drops the optimistic `pendingAction` and then re-opens the preview.
+     * Clearing it here rather than relying on the reopen matters because
+     * `openSubagentHistory` returns early when the node is gone or is no longer
+     * continuable, and a refresh can leave an error preview in place — either
+     * way a preview left in "pending" state blocks every later follow-up and
+     * interrupt until the user closes it.
+     */
+    private async settlePreviewAction(
+        rootSessionId: string,
+        childSessionId: string,
+        previewGeneration: number,
+    ): Promise<void> {
+        const preview = this.preview;
+        if (
+            this.deps.currentRootSession() !== rootSessionId ||
+            this.previewGeneration !== previewGeneration ||
+            preview?.childSessionId !== childSessionId
+        ) return;
+        if (preview.pendingAction !== undefined) {
+            this.preview = { ...preview, pendingAction: undefined };
+            this.deps.onChange();
+        }
+        await this.openSubagentHistory(childSessionId);
+    }
+
     public async followUpSubagent(childSessionId: string, text: string): Promise<void> {
         const rootSessionId = this.deps.currentRootSession();
         const node = this.selectedSubagent(childSessionId);
@@ -357,11 +383,7 @@ export class SubagentController {
                 throw new Error(t("Harness returned an invalid subagent.prompt acknowledgement."));
             }
             await this.refreshSubagentTree(rootSessionId);
-            if (
-                this.deps.currentRootSession() === rootSessionId &&
-                this.previewGeneration === previewGeneration &&
-                this.preview?.childSessionId === childSessionId
-            ) await this.openSubagentHistory(childSessionId);
+            await this.settlePreviewAction(rootSessionId, childSessionId, previewGeneration);
         } catch (error) {
             if (this.deps.currentRootSession() === rootSessionId && this.preview?.childSessionId === childSessionId) {
                 this.preview = {
@@ -400,11 +422,7 @@ export class SubagentController {
                 throw new Error(t("Harness returned an invalid subagent.interrupt acknowledgement."));
             }
             await this.refreshSubagentTree(rootSessionId);
-            if (
-                this.deps.currentRootSession() === rootSessionId &&
-                this.previewGeneration === previewGeneration &&
-                this.preview?.childSessionId === childSessionId
-            ) await this.openSubagentHistory(childSessionId);
+            await this.settlePreviewAction(rootSessionId, childSessionId, previewGeneration);
         } catch (error) {
             if (this.deps.currentRootSession() === rootSessionId && this.preview?.childSessionId === childSessionId) {
                 this.preview = {
