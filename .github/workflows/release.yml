@@ -104,13 +104,11 @@ jobs:
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
           VSIX: ${{ steps.metadata.outputs.vsix }}
-          PRERELEASE: ${{ steps.metadata.outputs.prerelease }}
-        run: |
-          if [[ "${PRERELEASE}" == "true" ]]; then
-            npx --yes ovsx publish "${VSIX}" -p "${OVSX_PAT}" --pre-release
-          else
-            npx --yes ovsx publish "${VSIX}" -p "${OVSX_PAT}"
-          fi
+        # No `--pre-release` here: ovsx ignores the flag for a prepackaged vsix
+        # ("Ignoring option '--pre-release' for prepackaged extension") and reads
+        # the `Microsoft.VisualStudio.Code.PreRelease` marker that the packaging
+        # step wrote into the manifest instead.
+        run: npx --yes ovsx publish "${VSIX}" -p "${OVSX_PAT}"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
