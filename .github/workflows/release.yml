@@ -52,9 +52,12 @@ jobs:
           fi
 
           # A SemVer pre-release tag (0.6.0-beta.1) marks a build that is not
-          # for the general channel: it produces a downloadable artifact and a
-          # pre-release GitHub release, and is never pushed to a marketplace,
-          # where it would become the version every user upgrades into.
+          # for the general channel. It still reaches Open VSX, but packaged
+          # and published with `--pre-release`, so the registry flags it and
+          # only clients whose user opted into pre-releases upgrade into it.
+          # The GitHub release is marked pre-release as well. Note that the
+          # VS Code Marketplace rejects SemVer pre-release suffixes outright,
+          # so these versions never go there (that publish is manual anyway).
           PRERELEASE=false
           if [[ "${VERSION}" == *-* ]]; then
             PRERELEASE=true
@@ -84,14 +87,30 @@ jobs:
           fi
 
       - name: Package extension
-        run: npm run package -- --no-dependencies
+        shell: bash
+        env:
+          PRERELEASE: ${{ steps.metadata.outputs.prerelease }}
+        # `--pre-release` writes the marker into the vsix manifest itself, so
+        # the flag survives packaging and publishing as one decision.
+        run: |
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            npm run package -- --no-dependencies --pre-release
+          else
+            npm run package -- --no-dependencies
+          fi
 
       - name: Publish to Open VSX
-        if: steps.metadata.outputs.prerelease == 'false'
+        shell: bash
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
           VSIX: ${{ steps.metadata.outputs.vsix }}
-        run: npx --yes ovsx publish "${VSIX}" -p "${OVSX_PAT}"
+          PRERELEASE: ${{ steps.metadata.outputs.prerelease }}
+        run: |
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            npx --yes ovsx publish "${VSIX}" -p "${OVSX_PAT}" --pre-release
+          else
+            npx --yes ovsx publish "${VSIX}" -p "${OVSX_PAT}"
+          fi
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2

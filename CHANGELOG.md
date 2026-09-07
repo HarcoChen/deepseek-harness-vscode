@@ -9,11 +9,23 @@
 
 <!-- 在这里填写下一版本的发布说明；npm run release 会自动提升这一节。 -->
 
+- 运行时兼容性：本版本已验证 `dsh 0.1.2-rc.1`（契约 pin `dsh-v0.1.2-rc.1@a66e4702047846cdaa10c66c9d3df3951f5ea70d`），托管 Runtime 默认同版本。`0.1.1-rc.2` 及更早不再支持——RC Remote 协议不兼容，连接旧 Runtime 时 `session/list` 返回 404 并提示升级。更高版本未经验证：升级默认 pin 前需按 `RPC_ADAPTATION_PLAN.md` §14 做 tag diff 并重跑 smoke，扩展目前不检测高于已验证范围的 Runtime。
 - 优化中英文 README：突出原生 Diff、审批与任务可观测性，补充首次配置、使用场景和排障入口；更新仓库地址、扩展商店名称、简介、分类、搜索关键词与展示背景。
 - 完整适配 `dsh 0.1.2-rc.1` 的 RC Remote 协议（契约 pin：`dsh-v0.1.2-rc.1@a66e4702047846cdaa10c66c9d3df3951f5ea70d`，见 `RPC_ADAPTATION_PLAN.md`）。新增 `src/remote/` carrier：unary（`/api/<namespace>/<method>` + `{args}` envelope，严格校验 `server-response` 与 rpcId）、单 WebSocket 多逻辑流的 `remote.mux`（open/cancel/item/error/end，终止帧幂等）、`$events` ready 作为每代连接的就绪屏障（generation 退避重连，旧代结果不得污染新状态）、`workspace/follow`/`session/control`/`session/follow`+`session/page` 原子 baseline 与增量合并、approval/question waterfall 以同代 `clientId` 应答 `$events/result`、prompt 幂等 `requestId` 防重发重复。
 - 旧 ApiProxy 协议整体移除：`harnessClient`（点号 endpoint、双 WebSocket、`/api/respond`）、`harnessState`、`harnessConnection`、`harnessProtocol` 与其测试删除；`sessionStore`/`sessionCatalog` 改为接收 Remote 状态协调器的明确 mutation/baseline（其 envelope reducer 保留为护栏测试入口）；`HarnessHostDescription`/`HarnessGoalEditChanges`/`HarnessQueueAction`/`HarnessStreamEnvelope` 迁入 `types.ts`。
 - 会话与工作区全量改走 RC Remote 端点：session（list/search/create/rename/fork/prompt/attachment/updateQueue/cancel/canOpenWorkspacePath/openWorkspacePath/modelCatalog/selectModel）、workspace（create/rename/insertBefore/insertSessionBefore/archiveSession/delete）、agentPresets、goals（携带 agentId 与 ref.revision 冲突语义）、commands、subagents、skills、messageFeedback、settings、credentials、llm、directoryPicker；`directoryPicker/*` 不可用时安全降级。
 - 错误分层落地：401/403 报鉴权、404 报能力缺失不降级旧协议、`gateway/arguments-invalid` 视为契约不匹配、未知 namespaced code 显示服务端文案并记录脱敏 details。已对真实 `0.1.2-rc.1` runtime 完成 32 项自动化 smoke（鉴权交换、unary/流握手、baseline、workspace 生命周期、能力端点、错误路径），UI 级流式与审批交互仍需人工冒烟。
+- 新增 Prompt 模板：`.dsh/prompts` 下的本地 Markdown 只读发现（限 100 个文件 / 4 层深度 / 单个 32 KiB，frontmatter `title` 或首个 `#` 标题作展示名，路径经 `..` 与绝对路径校验），入口为 Composer 的`/template` 与命令面板 `DSH: Insert Prompt Template`；选中后整篇成为输入框草稿，发送仍由用户完成。大小上限在读取前用 `workspace.fs.stat` 判定，列表侧不会为取标题而整读超限文件。不做自动注入与隐式记忆。
+- 新增只读插件清单：消费 `pluginInventory/list`，对 Loader 条目与 Agent preset 组合做严格快照校验，设置面板提供全局/会话分组、生命周期相位、搜索与手动刷新；不提供凭空的插件管理动作。
+- 新增动态插件面板（Cordis Host）：inventory、停止、移除与待批准请求提示，移除在面板内做行内二次确认，待批准可跳转 dsh Web UI。扩展不执行不可信的 `getClientCode`，Client half 仍由 Harness Web UI 负责。
+- 新增定时提醒面板：只读展示 schedule projection 的提醒内容、规则与下次执行时间。
+- 子代理补齐历史预览、跟进与中断：预览的待处理状态在刷新后显式结算，不会因为节点消失或活动状态变化而卡住后续操作。
+- `@` 引用补全接入 Runtime 侧候选：`fileReferences/list` 与 `sessionReferenceResolver/candidates`，端点缺失时回退本地候选；文件位置跳转在本地边界检查失败且 Host 宣布 `canOpenPath` 时回落到`session/openWorkspacePath`，为远程工作区保留公开协议路径。
+- 扩展启动的 Runtime 异常退出后按 1s/5s/15s 有界退避自动恢复；外部 Runtime 仍只复用、不接管。
+- 明确多根工作区语义：DSH 的 Session 与 DirectoryPicker 契约均为单 `cwd`，VS Code multi-root 不映射成一个DSH Session，启动 Runtime 时使用第一个 workspace folder；README 与 FAQ 同步说明，并补充「不会自动识别密钥或个人信息」这一上下文边界。
+- 活动面板与设置面板的滚动区域（Goal 详情、子代理转录、定时提醒、Todo）可用键盘聚焦并滚动。
+- 内部结构整理：chatView 拆出 `sessionCatalogCache`、`subagentController` 与 `messageFeedbackController`，目录缓存的请求去重、失效代际与重拉排队各只保留一处实现。
+- 预发布版本不再只挂 GitHub Releases：release workflow 对含 `-` 的版本改用 `vsce package --pre-release` 打包并以 `ovsx publish --pre-release` 发到 Open VSX，注册表会标记该版本，只有主动切换到预发布版本的用户才会收到，稳定通道不会被拽上去。VS Code Marketplace 不接受带 SemVer 预发布后缀的版本号，因此这类版本仍不进 Marketplace。
 
 ## [0.6.2] - 2026-09-05
 
