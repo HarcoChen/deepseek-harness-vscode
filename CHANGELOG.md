@@ -9,7 +9,18 @@
 
 <!-- 在这里填写下一版本的发布说明；npm run release 会自动提升这一节。 -->
 
-- 运行时兼容性：本版本已验证 `dsh 0.1.2-rc.1`（契约 pin `dsh-v0.1.2-rc.1@a66e4702047846cdaa10c66c9d3df3951f5ea70d`），托管 Runtime 默认同版本。`0.1.1-rc.2` 及更早不再支持——RC Remote 协议不兼容，连接旧 Runtime 时 `session/list` 返回 404 并提示升级。更高版本未经验证：升级默认 pin 前需按 `RPC_ADAPTATION_PLAN.md` §14 做 tag diff 并重跑 smoke，扩展目前不检测高于已验证范围的 Runtime。
+### ⚠️ 破坏性变更
+
+本版本整体切换到 `dsh 0.1.2-rc.1` 的 RC Remote 协议，旧 ApiProxy 协议已从代码中删除，**不保留向后兼容路径**。
+
+- **必须升级 dsh Runtime**：`0.1.1-rc.2` 及更早不再可用。连接旧 Runtime 时 `session/list` 返回 404，扩展直接报「未暴露 RC Remote RPC」并提示升级，不会降级回旧协议——会话列表、流式回答、审批与提问全部不可用。
+- **托管 Runtime 默认 pin 从 `0.1.1-rc.2` 提升到 `0.1.2-rc.1`**：首次启动会下载新的 Runtime；预览版之间 Runtime 存储格式可能不兼容，旧会话数据不保证可读。
+- **手动指定 `dsh.serverUrl` 的用户需要同步升级**那个 `dsh web` 实例，或把 `dsh.runtimeVersion` 留在默认值改用托管 Runtime。
+- **UI 级流式、审批/提问交互与断线恢复仍是未覆盖的人工冒烟项**，这也是本版本以 beta 发布的原因。
+
+### 变更
+
+- 运行时兼容范围：已验证 `dsh 0.1.2-rc.1`，契约 pin `dsh-v0.1.2-rc.1@a66e4702047846cdaa10c66c9d3df3951f5ea70d`。更高版本未经验证而非被阻止——扩展不检测高于已验证范围的 Runtime，升级默认 pin 前需按 `RPC_ADAPTATION_PLAN.md` §14 做 tag diff 并重跑 smoke。
 - 优化中英文 README：突出原生 Diff、审批与任务可观测性，补充首次配置、使用场景和排障入口；更新仓库地址、扩展商店名称、简介、分类、搜索关键词与展示背景。
 - 完整适配 `dsh 0.1.2-rc.1` 的 RC Remote 协议（契约 pin：`dsh-v0.1.2-rc.1@a66e4702047846cdaa10c66c9d3df3951f5ea70d`，见 `RPC_ADAPTATION_PLAN.md`）。新增 `src/remote/` carrier：unary（`/api/<namespace>/<method>` + `{args}` envelope，严格校验 `server-response` 与 rpcId）、单 WebSocket 多逻辑流的 `remote.mux`（open/cancel/item/error/end，终止帧幂等）、`$events` ready 作为每代连接的就绪屏障（generation 退避重连，旧代结果不得污染新状态）、`workspace/follow`/`session/control`/`session/follow`+`session/page` 原子 baseline 与增量合并、approval/question waterfall 以同代 `clientId` 应答 `$events/result`、prompt 幂等 `requestId` 防重发重复。
 - 旧 ApiProxy 协议整体移除：`harnessClient`（点号 endpoint、双 WebSocket、`/api/respond`）、`harnessState`、`harnessConnection`、`harnessProtocol` 与其测试删除；`sessionStore`/`sessionCatalog` 改为接收 Remote 状态协调器的明确 mutation/baseline（其 envelope reducer 保留为护栏测试入口）；`HarnessHostDescription`/`HarnessGoalEditChanges`/`HarnessQueueAction`/`HarnessStreamEnvelope` 迁入 `types.ts`。
