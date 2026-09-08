@@ -19,9 +19,14 @@ function ReasoningFold({
     autoOpen: boolean;
 }): React.JSX.Element {
     const detailsRef = useRef<HTMLDetailsElement>(null);
+    const previousStreamingRef = useRef<boolean>();
     const streaming = message.reasoningState === "streaming";
     useEffect(() => {
-        if (!autoOpen || !detailsRef.current) return;
+        // Write `open` only on a streaming transition, so a setting toggle
+        // without a transition never overrides the user's manual collapsed state.
+        const previousStreaming = previousStreamingRef.current;
+        previousStreamingRef.current = streaming;
+        if (!autoOpen || previousStreaming === streaming || !detailsRef.current) return;
         detailsRef.current.open = streaming;
     }, [autoOpen, streaming]);
     const reasoningBody = (

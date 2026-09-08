@@ -48,6 +48,7 @@ export function App(): React.JSX.Element {
                     sessionId={state.sessionId}
                     sessionRunning={state.sessionStatus?.running === true}
                     agentPresetLabel={state.agentPresetLabel}
+                    autoOpenReasoning={state.autoOpenReasoning}
                 />
             ) : null}
             <Composer
