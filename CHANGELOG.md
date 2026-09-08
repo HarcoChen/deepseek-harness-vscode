@@ -12,6 +12,12 @@
 ### 修复
 
 - 新增 `dsh.serverToken` 配置项。手动配置 `dsh.serverUrl` 时可以单独填写 dsh web 启动 Token，连接新版 Runtime 不再必须把 Token 拼进地址。
+- 修复空对话首次切换 preset/mode 时选择失效的问题；选择 mode 前会先恢复已有 Session，并把新对话的选择保存在草稿中。
+- 已有 Session 但没有本地 Workspace 时不再允许选择 mode，避免启动 Runtime 时缺少工作目录。
+
+### 变更
+
+- 临时暴露 `deepseek-v4.1-flash-expires-on-0910` 模型，并补齐可用的 reasoning 选项；该 fallback 仅展示至 2026-09-10，且在 DSH 未登记该模型时按 text-only route 处理。
 
 ## [0.9.0] - 2026-09-07
 
