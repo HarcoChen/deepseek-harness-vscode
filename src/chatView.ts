@@ -1984,10 +1984,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
 
     public async selectAgentPreset(requestedPreset?: string): Promise<void> {
-        if (!this.sessionId && !this.newSessionDraft) {
-            throw new Error(t("There is no current session."));
-        }
-        if (!this.runtime.getUrl()) await this.runtime.start(this.workspaceRoot());
+        const workspaceRoot = this.workspaceRoot();
+        if (!workspaceRoot) throw new Error(t("Open a workspace first."));
+        if (!this.runtime.getUrl()) await this.runtime.start(workspaceRoot);
+        // The initial empty view has no Session id yet. Give persisted state a
+        // chance to restore before treating the mode choice as a new-session
+        // draft, otherwise a quick first `/mode` could strand the saved Session.
+        await this.restorePersistedSession(workspaceRoot);
         const catalog = await this.runtime.agentPresets();
         this.agentPresetCatalog = catalog.presets;
         const available = catalog.presets.filter((preset) => !preset.broken);
@@ -2018,6 +2021,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             ).then((picked) => picked?.preset);
         }
         if (!target) return;
+
+        // A mode can be chosen before the first prompt. Keep it in the same
+        // draft used by the explicit New Session action; the actual Session is
+        // created on first send with this preset in its creation request.
+        if (!this.sessionId && !this.newSessionDraft) {
+            await this.newSession(target.id);
+            return;
+        }
 
         if (this.newSessionDraft && !this.sessionId) {
             this.pendingNewSessionPreset = target.id;
