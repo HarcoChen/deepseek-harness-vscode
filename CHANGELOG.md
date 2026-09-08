@@ -9,6 +9,8 @@
 
 <!-- 在这里填写下一版本的发布说明；npm run release 会自动提升这一节。 -->
 
+## [0.9.1] - 2026-09-08
+
 ### 修复
 
 - 新增 `dsh.serverToken` 配置项。手动配置 `dsh.serverUrl` 时可以单独填写 dsh web 启动 Token，连接新版 Runtime 不再必须把 Token 拼进地址。
@@ -207,6 +209,7 @@
 
 - 首个社区预览版本，提供 `dsh web` Runtime 集成、侧栏聊天和 IDE 上下文附加。
 
+[0.9.1]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.7.0-beta.1...v0.9.0
 [0.7.0-beta.1]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.6.2...v0.7.0-beta.1
 [0.6.2]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.6.1...v0.6.2
