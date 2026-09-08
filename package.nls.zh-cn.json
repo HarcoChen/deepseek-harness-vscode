@@ -61,5 +61,6 @@
     "config.agentStatusLabel.description": "DSH 流式输出助手回复时显示的固定文字。留空时会从 dsh.agentStatusLabels 中随机选择；配套扩展可通过导出的 API 临时覆盖这两项设置。",
     "config.agentStatusLabels.description": "当 dsh.agentStatusLabel 为空时，每轮流式 Agent 回复开始时随机选择一次的候选文案。",
     "config.balanceRefreshIntervalMs.description": "DeepSeek 余额状态栏项目的刷新间隔。",
-    "config.enableEffortKnob.description": "在思考强度滑块上用大肥鱼（chibi runner）精灵图作为滑块按钮。关闭后使用原生滑块手柄。"
+    "config.enableEffortKnob.description": "在思考强度滑块上用大肥鱼（chibi runner）精灵图作为滑块按钮。关闭后使用原生滑块手柄。",
+    "config.autoOpenReasoning.description": "思维链流式输出时自动展开折叠块，流式结束后自动收起。两个时机之间仍可手动开合；历史消息保持收起。"
 }

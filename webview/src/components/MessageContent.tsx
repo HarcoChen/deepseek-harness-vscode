@@ -1,8 +1,54 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import type { ChatMessage } from "../../../src/types";
 import { t } from "../i18n";
 import { CompactionCard, ToolCard } from "./Cards";
 import { MessageImages } from "./MessageImages";
+
+/**
+ * The reasoning fold auto-expands while reasoning streams in and auto-collapses
+ * when streaming completes. The effect only writes `open` when `streaming`
+ * flips, so manual toggling between the two transitions is never overridden.
+ */
+function ReasoningFold({
+    message,
+    agentStatusLabel,
+    autoOpen,
+}: {
+    message: ChatMessage;
+    agentStatusLabel?: string;
+    autoOpen: boolean;
+}): React.JSX.Element {
+    const detailsRef = useRef<HTMLDetailsElement>(null);
+    const streaming = message.reasoningState === "streaming";
+    useEffect(() => {
+        if (!autoOpen || !detailsRef.current) return;
+        detailsRef.current.open = streaming;
+    }, [autoOpen, streaming]);
+    const reasoningBody = (
+        <div
+            className="dsh-message-body"
+            {...(typeof message.renderedReasoningHtml === "string"
+                ? { dangerouslySetInnerHTML: { __html: message.renderedReasoningHtml } }
+                : { children: <p>{message.reasoning}</p> })}
+        />
+    );
+    return (
+        <details
+            ref={detailsRef}
+            className="dsh-message-reasoning"
+            {...(typeof message.reasoningRenderId === "string"
+                ? { "data-render-id": message.reasoningRenderId }
+                : {})}
+        >
+            <summary>
+                {streaming
+                    ? agentStatusLabel ?? t("Thinking...")
+                    : t("Reasoning · complete")}
+            </summary>
+            {reasoningBody}
+        </details>
+    );
+}
 
 /**
  * Body + optional reasoning fold. `renderedHtml` is fixed-vocabulary HTML produced
@@ -11,9 +57,11 @@ import { MessageImages } from "./MessageImages";
 export function MessageContent({
     message,
     agentStatusLabel,
+    autoOpenReasoning,
 }: {
     message: ChatMessage;
     agentStatusLabel?: string;
+    autoOpenReasoning?: boolean;
 }): React.JSX.Element {
     if (message.role === "tool" && message.tool) {
         return <ToolCard tool={message.tool} />;
@@ -40,31 +88,15 @@ export function MessageContent({
     if (message.role !== "assistant" || !message.reasoning) {
         return <>{images}{skill}{body}</>;
     }
-    const reasoningBody = (
-        <div
-            className="dsh-message-body"
-            {...(typeof message.renderedReasoningHtml === "string"
-                ? { dangerouslySetInnerHTML: { __html: message.renderedReasoningHtml } }
-                : { children: <p>{message.reasoning}</p> })}
-        />
-    );
     return (
         <>
             {images}
             {body}
-            <details
-                className="dsh-message-reasoning"
-                {...(typeof message.reasoningRenderId === "string"
-                    ? { "data-render-id": message.reasoningRenderId }
-                    : {})}
-            >
-                <summary>
-                    {message.reasoningState === "streaming"
-                        ? agentStatusLabel ?? t("Thinking...")
-                        : t("Reasoning · complete")}
-                </summary>
-                {reasoningBody}
-            </details>
+            <ReasoningFold
+                message={message}
+                agentStatusLabel={agentStatusLabel}
+                autoOpen={autoOpenReasoning !== false}
+            />
         </>
     );
 }

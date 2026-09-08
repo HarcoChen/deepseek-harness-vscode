@@ -1149,6 +1149,8 @@ export interface ChatViewState {
     busy: boolean;
     /** Plugin-provided label for the current streaming assistant state. */
     agentStatusLabel?: string;
+    /** False disables auto open/close of the reasoning fold around streaming. */
+    autoOpenReasoning?: boolean;
     submitting: boolean;
     cancelling: boolean;
     focusMode: boolean;
