@@ -514,6 +514,12 @@
                     "default": "",
                     "description": "%config.serverUrl.description%"
                 },
+                "dsh.serverToken": {
+                    "type": "string",
+                    "default": "",
+                    "scope": "machine",
+                    "description": "%config.serverToken.description%"
+                },
                 "dsh.serverPort": {
                     "type": "number",
                     "default": 0,

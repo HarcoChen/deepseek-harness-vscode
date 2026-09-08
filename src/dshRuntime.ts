@@ -229,6 +229,21 @@ function parseRuntimeEndpoint(value: unknown, loopbackOnly = false): RuntimeEndp
     }
 }
 
+/** Add a separately configured dsh web launch token to a parsed endpoint. */
+function applyRuntimeToken(endpoint: RuntimeEndpoint, token: unknown): RuntimeEndpoint | undefined {
+    if (typeof token !== "string") return endpoint;
+    const normalized = token.trim();
+    if (!normalized) return endpoint;
+    if (!AUTH_TOKEN_PATTERN.test(normalized)) return undefined;
+
+    const launch = new URL(endpoint.baseUrl);
+    launch.searchParams.set("token", normalized);
+    return {
+        baseUrl: endpoint.baseUrl,
+        launchUrl: launch.href,
+    };
+}
+
 /** One lock file's advertised Runtime endpoint, or undefined when it has none. */
 async function readLockRecord(path: string): Promise<RuntimeEndpoint | undefined> {
     try {
@@ -1085,6 +1100,7 @@ export class DshRuntime implements vscode.Disposable {
             ? configuredArgs.filter((argument): argument is string => typeof argument === "string")
             : [];
         const serverUrl = configuration.get<string>("serverUrl", "").trim();
+        const serverToken = configuration.get<string>("serverToken", "").trim();
         const configuredPort = configuration.get<number>("serverPort", 0);
         const apiKeyRef = configuration.get<string>("apiKeyEnv", "DEEPSEEK_API_KEY").trim();
         const commandPath = await findExecutable(command);
@@ -1171,6 +1187,7 @@ export class DshRuntime implements vscode.Disposable {
             `Workspace root argument: ${workspaceRoot ?? "<none>"}`,
             `Workspace folders: ${workspaceFolders.length ? workspaceFolders.map((folder) => folder.uri.fsPath).join(" | ") : "<none>"}`,
             `Configured server URL: ${serverUrl ? redactUrl(serverUrl) : "<none>"}`,
+            `Configured server token: ${serverToken ? "<set>" : "<none>"}`,
             `Configured server port: ${configuredPort || "automatic"}`,
             `Configured command: ${command} ${redactArguments(args)}`.trim(),
             `package-manager startup timeout: ${npxTimeoutMs} ms`,
@@ -2066,6 +2083,7 @@ export class DshRuntime implements vscode.Disposable {
     private async startInternal(workspaceRoot?: string): Promise<string> {
         const configuration = this.configuration();
         const configuredUrl = configuration.get<string>("serverUrl", "").trim();
+        const configuredToken = configuration.get<string>("serverToken", "").trim();
         const startupTimeout = configuration.get<number>("startupTimeoutMs", 30_000);
 
         if (!vscode.workspace.isTrusted) {
@@ -2087,14 +2105,23 @@ export class DshRuntime implements vscode.Disposable {
                 await this.stop();
                 this.setStatus({ state: "starting", message: t("Connecting to dsh web...") });
             }
-            const endpoint = parseRuntimeEndpoint(configuredUrl);
-            if (!endpoint) {
+            const parsedEndpoint = parseRuntimeEndpoint(configuredUrl);
+            if (!parsedEndpoint) {
                 const message = t("Invalid dsh Runtime URL.");
                 this.setStatus({ state: "error", message });
                 throw new Error(message);
             }
+            const endpoint = applyRuntimeToken(parsedEndpoint, configuredToken);
+            if (!endpoint) {
+                const message = t("Invalid dsh Runtime token.");
+                this.setStatus({ state: "error", message });
+                throw new Error(message);
+            }
             const url = endpoint.baseUrl;
-            this.setRuntimeEndpoint(endpoint);
+            // A manually configured address is authoritative. In particular,
+            // clearing dsh.serverToken must not keep a launch token discovered
+            // during an earlier connection to the same origin.
+            this.setRuntimeEndpoint(endpoint, false);
             await this.waitForReady(url, startupTimeout);
             this.baseUrl = url;
             this.startedByExtension = false;
@@ -2452,11 +2479,11 @@ export class DshRuntime implements vscode.Disposable {
         }));
     }
 
-    private setRuntimeEndpoint(endpoint: RuntimeEndpoint): void {
+    private setRuntimeEndpoint(endpoint: RuntimeEndpoint, preservePreviousLaunchUrl = true): void {
         const previousBaseUrl = this.baseUrl;
         const previousLaunchUrl = this.launchUrl;
         const launchUrl = endpoint.launchUrl ?? (
-            previousBaseUrl === endpoint.baseUrl ? previousLaunchUrl : undefined
+            preservePreviousLaunchUrl && previousBaseUrl === endpoint.baseUrl ? previousLaunchUrl : undefined
         );
         this.baseUrl = endpoint.baseUrl;
         this.launchUrl = launchUrl;
