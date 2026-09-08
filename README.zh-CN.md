@@ -104,7 +104,7 @@
 
 **需要手动安装 DSH 吗？** 通常不需要。扩展会寻找可用的本地环境，并在需要时尝试下载托管 Runtime。首次下载需要联网；`dsh.installWhenMissing` 可控制自动安装。
 
-**可以连接已有 Runtime 吗？** 可以，将 `dsh.serverUrl` 设置为正在运行的 `dsh web` 地址。扩展已适配 `dsh 0.1.2-rc.1` 的 RC Remote RPC，默认托管 Runtime 为 `0.1.2-rc.1`。`0.1.1-rc.2` 及更早不再支持——协议不兼容，连接旧 Runtime 会提示 RC Remote 端点缺失并给出升级提示。更高版本是「未验证」而非「已阻止」：扩展不会检测高于已验证范围的 Runtime，调整 `dsh.runtimeVersion` 前请先确认该版本的协议变化。
+**可以连接已有 Runtime 吗？** 可以，将 `dsh.serverUrl` 设置为正在运行的 `dsh web` 地址；如果地址中没有 Token，再将启动 Token 填入 `dsh.serverToken`。扩展已适配 `dsh 0.1.2-rc.1` 的 RC Remote RPC，默认托管 Runtime 为 `0.1.2-rc.1`。`0.1.1-rc.2` 及更早不再支持——协议不兼容，连接旧 Runtime 会提示 RC Remote 端点缺失并给出升级提示。更高版本是「未验证」而非「已阻止」：扩展不会检测高于已验证范围的 Runtime，调整 `dsh.runtimeVersion` 前请先确认该版本的协议变化。
 
 **支持多根工作区吗？** DSH 支持多个彼此独立的 Workspace，但每个 Session 只有一个工作目录（`cwd`）。VS Code 多根工作区启动 Runtime 时使用第一个 workspace folder；如果不同根目录需要不同工作目录，请分别建立 DSH Workspace 或 Session。
 
@@ -134,7 +134,8 @@ graph TD
 
 | 设置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `dsh.serverUrl` | `""` | 已运行的 dsh web Runtime 地址，设置后扩展将直接连接。 |
+| `dsh.serverUrl` | `""` | 已运行的 dsh web Runtime 地址，设置后扩展将直接连接；可在地址中附加 `?token=...`，或单独设置 `dsh.serverToken`。 |
+| `dsh.serverToken` | `""` | `dsh.serverUrl` 对应的启动 Token；地址与 Token 分开配置时填写。 |
 | `dsh.autoStart` | `true` | 扩展激活时自动启动或连接 dsh web。 |
 | `dsh.installWhenMissing` | `true` | 若无可用的 npm/dsh 环境，自动下载并托管独立 Runtime。 |
 | `dsh.runtimeVersion` | `0.1.2-rc.1` | 下载托管 Runtime 时使用的版本。 |

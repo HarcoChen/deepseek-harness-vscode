@@ -396,6 +396,7 @@
     "PATH dsh: not found": "PATH 中的 dsh：未找到",
     "Preparing DSH Runtime {version}…": "正在准备 DSH Runtime {version}…",
     "Remote dsh Runtime URLs must use HTTPS.": "远程 dsh Runtime 地址必须使用 HTTPS。",
+    "Invalid dsh Runtime token.": "dsh Runtime Token 无效。",
     "Refusing to download over a non-HTTPS URL.": "拒绝通过非 HTTPS URL 下载。",
     "The Runtime archive must contain a single top-level dsh-runtime directory.": "Runtime 归档必须只包含一个顶层 dsh-runtime 目录。",
     "The Runtime launcher is missing after extraction: {path}": "解压后缺少 Runtime 启动器：{path}",
