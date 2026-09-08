@@ -12,6 +12,7 @@ interface MessageItemProps {
     message: ChatMessage;
     submitting: boolean;
     agentStatusLabel?: string;
+    autoOpenReasoning?: boolean;
 }
 
 type CheckpointAction =
@@ -82,6 +83,7 @@ export const MessageItem = React.memo(function MessageItem({
     message,
     submitting,
     agentStatusLabel,
+    autoOpenReasoning,
 }: MessageItemProps): React.JSX.Element {
     const stateClass =
         message.state === "streaming"
@@ -130,7 +132,11 @@ export const MessageItem = React.memo(function MessageItem({
                 ) : null}
                 {checkpointSeq === undefined ? null : <MessageCheckpointMenu seq={checkpointSeq} />}
             </div>
-            <MessageContent message={message} agentStatusLabel={agentStatusLabel} />
+            <MessageContent
+                message={message}
+                agentStatusLabel={agentStatusLabel}
+                autoOpenReasoning={autoOpenReasoning}
+            />
             {message.state === "failed" ? (
                 <button
                     type="button"

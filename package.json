@@ -608,6 +608,11 @@
                     "type": "boolean",
                     "default": true,
                     "description": "%config.enableEffortKnob.description%"
+                },
+                "dsh.autoOpenReasoning": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "%config.autoOpenReasoning.description%"
                 }
             }
         }

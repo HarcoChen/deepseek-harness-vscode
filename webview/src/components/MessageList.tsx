@@ -9,6 +9,7 @@ interface MessageListProps {
     messages: ChatMessage[];
     submitting: boolean;
     agentStatusLabel?: string;
+    autoOpenReasoning?: boolean;
 }
 
 /** Structural equality for plain host-projected data (no functions, no cycles). */
@@ -64,6 +65,7 @@ export const MessageList = React.memo(function MessageList({
     messages,
     submitting,
     agentStatusLabel,
+    autoOpenReasoning,
 }: MessageListProps): React.JSX.Element {
     const listRef = useRef<HTMLDivElement>(null);
     const stickToBottomRef = useRef(true);
@@ -138,6 +140,7 @@ export const MessageList = React.memo(function MessageList({
                         message={message}
                         submitting={submitting}
                         agentStatusLabel={agentStatusLabel}
+                        autoOpenReasoning={autoOpenReasoning}
                     />
                 ))
             )}

@@ -29,6 +29,7 @@ export function App(): React.JSX.Element {
                 messages={state.messages}
                 submitting={state.submitting}
                 agentStatusLabel={state.agentStatusLabel}
+                autoOpenReasoning={state.autoOpenReasoning}
             />
             {!state.focusMode ? <Interactions interactions={state.interactions} /> : null}
             {!state.focusMode ? (
@@ -47,6 +48,7 @@ export function App(): React.JSX.Element {
                     sessionId={state.sessionId}
                     sessionRunning={state.sessionStatus?.running === true}
                     agentPresetLabel={state.agentPresetLabel}
+                    autoOpenReasoning={state.autoOpenReasoning}
                 />
             ) : null}
             <Composer

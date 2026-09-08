@@ -61,5 +61,6 @@
     "config.agentStatusLabel.description": "Optional fixed text shown while DSH is streaming an assistant response. Leave empty to randomly choose an item from dsh.agentStatusLabels. A companion extension can temporarily override either setting through the exported API.",
     "config.agentStatusLabels.description": "Candidate labels randomly selected once per streaming agent turn when dsh.agentStatusLabel is empty.",
     "config.balanceRefreshIntervalMs.description": "Interval for refreshing the DeepSeek balance status bar item.",
-    "config.enableEffortKnob.description": "Show the chibi runner sprite as the reasoning effort slider knob. Disable to use the native slider handle."
+    "config.enableEffortKnob.description": "Show the chibi runner sprite as the reasoning effort slider knob. Disable to use the native slider handle.",
+    "config.autoOpenReasoning.description": "Automatically expand the reasoning fold while it is streaming in and collapse it when streaming completes. Manual toggles between those transitions are respected; history messages stay collapsed."
 }

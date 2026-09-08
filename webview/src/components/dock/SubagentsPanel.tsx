@@ -88,7 +88,7 @@ function formatExactDuration(milliseconds: number): string {
     });
 }
 
-function SubagentPreviewCard({ preview, now }: { preview: SubagentHistoryPreview; now: number }): React.JSX.Element {
+function SubagentPreviewCard({ preview, now, autoOpenReasoning }: { preview: SubagentHistoryPreview; now: number; autoOpenReasoning?: boolean }): React.JSX.Element {
     const [followUp, setFollowUp] = useState("");
     const busy = Boolean(preview.pendingAction);
     const canFollowUp = preview.parentAvailable && !busy;
@@ -126,7 +126,7 @@ function SubagentPreviewCard({ preview, now }: { preview: SubagentHistoryPreview
                             <div className="dsh-message-label">
                                 {message.role === "assistant" ? "subagent" : message.role === "user" ? t("You") : t("System")}
                             </div>
-                            <MessageContent message={message} />
+                            <MessageContent message={message} autoOpenReasoning={autoOpenReasoning} />
                         </div>
                     ))}
                 </div>
@@ -164,7 +164,7 @@ function SubagentPreviewCard({ preview, now }: { preview: SubagentHistoryPreview
     );
 }
 
-export function SubagentsPanel({ tree, preview }: { tree: SubagentTreeView; preview?: SubagentHistoryPreview }): React.JSX.Element {
+export function SubagentsPanel({ tree, preview, autoOpenReasoning }: { tree: SubagentTreeView; preview?: SubagentHistoryPreview; autoOpenReasoning?: boolean }): React.JSX.Element {
     const [now, setNow] = useState(() => Date.now());
     const hasRunningTiming = tree.nodes.some(
         (node) => node.kind === "child" && node.activity === "running" && node.timing?.active !== undefined,
@@ -222,7 +222,7 @@ export function SubagentsPanel({ tree, preview }: { tree: SubagentTreeView; prev
                     </div>
                 );
             })}
-            {preview ? <SubagentPreviewCard preview={preview} now={now} /> : null}
+            {preview ? <SubagentPreviewCard preview={preview} now={now} autoOpenReasoning={autoOpenReasoning} /> : null}
         </div>
     );
 }

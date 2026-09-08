@@ -34,6 +34,7 @@ interface ActivityDockProps {
     sessionId: ActivityDockState["sessionId"];
     sessionRunning: boolean;
     agentPresetLabel: ActivityDockState["agentPresetLabel"];
+    autoOpenReasoning?: boolean;
 }
 
 export const ActivityDock = React.memo(function ActivityDock({
@@ -51,6 +52,7 @@ export const ActivityDock = React.memo(function ActivityDock({
     sessionId,
     sessionRunning,
     agentPresetLabel,
+    autoOpenReasoning,
 }: ActivityDockProps): React.JSX.Element | null {
     const [active, setActive] = useState<DockTab | null>(null);
     const [collapsed, setCollapsed] = useState(true);
@@ -169,7 +171,7 @@ export const ActivityDock = React.memo(function ActivityDock({
                     {!collapsed && selectedTab === "goal" && tab.id === "goal" && goal ? <GoalPanel goal={goal} /> : null}
                     {!collapsed && selectedTab === "queue" && tab.id === "queue" ? <QueuePanel queue={queue} running={sessionRunning} /> : null}
                     {!collapsed && selectedTab === "changes" && tab.id === "changes" ? <ChangesPanel reviews={changeReviews} running={sessionRunning} /> : null}
-                    {!collapsed && selectedTab === "subagents" && tab.id === "subagents" && subagents ? <SubagentsPanel tree={subagents} preview={preview} /> : null}
+                    {!collapsed && selectedTab === "subagents" && tab.id === "subagents" && subagents ? <SubagentsPanel tree={subagents} preview={preview} autoOpenReasoning={autoOpenReasoning} /> : null}
                     {!collapsed && selectedTab === "jobs" && tab.id === "jobs" ? <JobsPanel jobs={jobs} /> : null}
                     {!collapsed && selectedTab === "schedule" && tab.id === "schedule" && schedule ? <SchedulePanel schedule={schedule} /> : null}
                     {!collapsed && selectedTab === "permissions" && tab.id === "permissions" && permissions ? <PermissionsPanel permissions={permissions} switchable={canSwitchPermissions(commands)} /> : null}

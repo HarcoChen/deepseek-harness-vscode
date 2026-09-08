@@ -451,7 +451,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             vscode.window.onDidChangeTextEditorSelection(() => this.schedulePostState()),
             this.changeReviews.onDidUpdate(() => this.schedulePostState()),
             vscode.workspace.onDidChangeConfiguration((event) => {
-                if (event.affectsConfiguration("dsh.enableEffortKnob")) {
+                if (
+                    event.affectsConfiguration("dsh.enableEffortKnob") ||
+                    event.affectsConfiguration("dsh.autoOpenReasoning")
+                ) {
                     this.schedulePostState();
                 }
             }),
@@ -2863,6 +2866,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         const host = presentHostBaseline(this.runtime.getHostDescription());
         const busy = selected?.running === true;
         const agentStatusLabel = this.agentStatusLabel(this.sessionId, busy);
+        const autoOpenReasoning =
+            vscode.workspace.getConfiguration("dsh").get<boolean>("autoOpenReasoning", true);
         const projectedMessages = focusChatMessages(
             projectChatMessages(session, this.optimisticPrompts, this.sessionSkillNames()),
             this.focusMode,
@@ -2894,6 +2899,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             ...(agentStatusLabel === undefined
                 ? {}
                 : { agentStatusLabel }),
+            ...(autoOpenReasoning ? {} : { autoOpenReasoning: false }),
             submitting: this.submitting,
             cancelling: this.cancelRequested && selected?.running === true,
             focusMode: this.focusMode,
