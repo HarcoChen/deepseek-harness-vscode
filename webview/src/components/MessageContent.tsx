@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useLayoutEffect, useRef } from "react";
 import type { ChatMessage } from "../../../src/types";
 import { t } from "../i18n";
 import { CompactionCard, ToolCard } from "./Cards";
@@ -21,7 +21,8 @@ function ReasoningFold({
     const detailsRef = useRef<HTMLDetailsElement>(null);
     const previousStreamingRef = useRef<boolean>();
     const streaming = message.reasoningState === "streaming";
-    useEffect(() => {
+    useLayoutEffect(() => {
+        // Update the fold before MessageList's layout effect measures the scroll height.
         // Write `open` only on a streaming transition, so a setting toggle
         // without a transition never overrides the user's manual collapsed state.
         const previousStreaming = previousStreamingRef.current;
