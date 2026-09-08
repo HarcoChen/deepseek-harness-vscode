@@ -96,6 +96,13 @@ const DEFAULT_PACKAGE_MANAGER_FETCH_TIMEOUT_MS = 30_000;
 const DEFAULT_NPM_REGISTRY = "https://registry.npmmirror.com";
 const OFFICIAL_NPM_REGISTRY = "https://registry.npmjs.org";
 const NPM_REGISTRY_QUERY_TIMEOUT_MS = 5_000;
+/** Temporary DeepSeek model exposed by the official endpoint before catalog refresh. */
+const FORCED_DEEPSEEK_PROVIDER = "deepseek-official";
+const FORCED_DEEPSEEK_MODEL_ID = "deepseek-v4.1-flash-expires-on-0910";
+/** Keep the temporary route visible through 2026-09-10, then stop advertising it. */
+const FORCED_DEEPSEEK_MODEL_LAST_VISIBLE_AT = Date.UTC(2026, 8, 11);
+const FORCED_DEEPSEEK_MODEL_DESCRIPTION =
+    "Temporary text-only route; available through 2026-09-10.";
 /** Bounded recovery delays for a Runtime launched by this extension. */
 const RUNTIME_RECOVERY_DELAYS_MS = [1_000, 5_000, 15_000] as const;
 type PackageManager = "npx" | "pnpm";
@@ -115,6 +122,49 @@ const LEGACY_RUNTIME_LOCK_FILE = "dsh-vscode-runtime.lock";
 
 function delay(milliseconds: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function appendTemporaryDeepSeekModel(
+    groups: DshSessionModelsResult["groups"],
+): DshSessionModelsResult["groups"] {
+    if (Date.now() >= FORCED_DEEPSEEK_MODEL_LAST_VISIBLE_AT) return groups;
+
+    return groups.map((group) => {
+        if (
+            group.id !== FORCED_DEEPSEEK_PROVIDER ||
+            group.models.some((model) => model.id === FORCED_DEEPSEEK_MODEL_ID)
+        ) {
+            return group;
+        }
+
+        // The unlisted model is resolved by Harness as text-only. Reuse the
+        // provider's configured reasoning metadata so /effort remains aligned
+        // with the active connection instead of inventing a model capability.
+        const reasoning = group.models.find(
+            (model) => (model.reasoning?.efforts.length ?? 0) > 0,
+        )?.reasoning;
+        return {
+            ...group,
+            models: [
+                ...group.models,
+                {
+                    id: FORCED_DEEPSEEK_MODEL_ID,
+                    name: FORCED_DEEPSEEK_MODEL_ID,
+                    description: FORCED_DEEPSEEK_MODEL_DESCRIPTION,
+                    ...(reasoning === undefined
+                        ? {}
+                        : {
+                              reasoning: {
+                                  efforts: reasoning.efforts.map((effort) => ({ ...effort })),
+                                  ...(reasoning.defaultEffort === undefined
+                                      ? {}
+                                      : { defaultEffort: reasoning.defaultEffort }),
+                              },
+                          }),
+                },
+            ],
+        };
+    });
 }
 
 /**
@@ -1569,7 +1619,7 @@ export class DshRuntime implements vscode.Disposable {
         return {
             current,
             routable: catalog.routableProviders.includes(current.provider),
-            groups: catalog.groups,
+            groups: appendTemporaryDeepSeekModel(catalog.groups),
             failures: catalog.failures,
         };
     }
