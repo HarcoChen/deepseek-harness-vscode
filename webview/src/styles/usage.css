@@ -1,19 +1,25 @@
 /* ---------- token usage ---------- */
 
-/* Lives inline in the composer footer now — a compact chip, not a standing bar.
-   Kept as the positioning context so the statistics panel pops up from it. */
+/* Lives inline in the composer footer now — a compact context indicator and
+   model switcher, not a standing bar. */
 .dsh-usage {
-    position: relative;
+    display: flex;
+    align-items: center;
+    gap: var(--dsh-space-2);
     flex: 1 1 auto;
     min-width: 0;
     color: var(--vscode-descriptionForeground);
     font-size: var(--dsh-font-xs);
 }
 
-.dsh-usage-summary {
+.dsh-usage-context {
+    position: relative;
+    flex: none;
+}
+
+.dsh-usage-context-trigger {
     display: flex;
     align-items: center;
-    width: 100%;
     gap: var(--dsh-space-2);
     padding: 2px var(--dsh-space-2);
     border: 1px solid transparent;
@@ -24,7 +30,8 @@
     text-align: left;
 }
 
-.dsh-usage-summary:hover {
+.dsh-usage-context-trigger:hover,
+.dsh-usage-context-trigger:focus-visible {
     border-color: var(--dsh-border);
     background: var(--dsh-surface-hover);
 }
@@ -92,15 +99,32 @@
     font-weight: 600;
 }
 
-.dsh-usage-summary-route {
+.dsh-usage-model {
     min-width: 0;
     flex: 1;
     overflow: hidden;
+    padding: 2px var(--dsh-space-2);
+    border: 1px solid transparent;
+    border-radius: var(--dsh-radius-chip);
+    color: var(--vscode-foreground);
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.dsh-usage-summary-route strong {
+.dsh-usage-model:hover,
+.dsh-usage-model:focus-visible {
+    border-color: var(--dsh-border);
+    background: var(--dsh-surface-hover);
+}
+
+.dsh-usage-model strong {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-weight: 600;
 }
 
@@ -110,13 +134,15 @@
     font-variant-numeric: tabular-nums;
 }
 
-/* Rises from the compact chip in the composer footer. Anchored to the chip's
+/* Rises from the context ring in the composer footer. Anchored to the ring's
    right edge with a capped width so it stays a self-contained popover rather
    than the old full-width strip. */
 .dsh-usage-panel {
     position: absolute;
     right: 0;
-    bottom: calc(100% + var(--dsh-space-2));
+    /* Touch the trigger so the pointer can travel from the ring into the
+       hover panel without crossing a gap that would dismiss it. */
+    bottom: 100%;
     z-index: 40;
     width: min(340px, calc(100vw - 2 * var(--dsh-space-4)));
     max-height: min(520px, 65vh);

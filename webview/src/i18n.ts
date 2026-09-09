@@ -249,7 +249,7 @@ const ZH_CN: Readonly<Record<string, string>> = {
     "Unknown model": "模型未知",
     "Default": "默认",
     "Token and context usage": "Token 与上下文用量",
-    "Open token statistics": "打开 Token 统计",
+    "Show context breakdown": "显示上下文分解",
     "Token statistics": "Token 统计",
     "Close": "关闭",
     "Estimate based on the latest provider usage and current Surface changes": "估算值：基于最近 provider usage 与当前 Surface 变化推算下一次请求占用",
