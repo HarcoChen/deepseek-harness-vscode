@@ -220,7 +220,7 @@ export const Header = React.memo(function Header({
                 title={t("Search sessions")}
                 onClick={() => postAction({ type: "searchSession" })}
             >
-                <SearchIcon />
+                <SearchIcon size={16} />
             </button>
             <div className="dsh-menu-anchor" ref={menuRef}>
                 <button
@@ -230,7 +230,7 @@ export const Header = React.memo(function Header({
                     aria-expanded={menuOpen}
                     onClick={() => setMenuOpen((open) => !open)}
                 >
-                    <MoreIcon />
+                    <MoreIcon size={16} />
                 </button>
                 {menuOpen ? (
                     // Disclosure, not the ARIA menu pattern: these are plain buttons
