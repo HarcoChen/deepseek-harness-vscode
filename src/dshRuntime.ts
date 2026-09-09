@@ -2316,6 +2316,18 @@ export class DshRuntime implements vscode.Disposable {
             );
         }
 
+        const packageManagerNotice = isPackageManagerSource(launcher.source)
+            ? {
+                title: t("DSH Runtime"),
+                message: t("Downloading DSH Runtime via {command}…", {
+                    command: describeSource(launcher.source),
+                }),
+            }
+            : undefined;
+        if (packageManagerNotice) {
+            this.setStatus({ state: "starting", message: packageManagerNotice.message });
+        }
+
         const launchAttempt = async (attemptArgs: string[]): Promise<string> => {
             const candidatePort = portFromArgs(attemptArgs);
             this.baseUrl = candidatePort
@@ -2438,10 +2450,11 @@ export class DshRuntime implements vscode.Disposable {
             }
         };
 
-        let url: string;
-        try {
+        const launchWithFallback = async (
+            progress?: vscode.Progress<{ message?: string; increment?: number }>,
+        ): Promise<string> => {
             try {
-                url = await launchAttempt(args);
+                return await launchAttempt(args);
             } catch (error) {
                 const registry = npmRegistry;
                 if (!isPackageManagerSource(launcher.source) || registry === undefined) throw error;
@@ -2453,8 +2466,13 @@ export class DshRuntime implements vscode.Disposable {
                 this.output.appendLine(
                     `[dsh] ${launcher.source.kind} download/start failed; retrying with npm registry ${redactUrl(registry)}`,
                 );
+                progress?.report({
+                    message: t("Retrying DSH Runtime download via {command}…", {
+                        command: describeSource(launcher.source),
+                    }),
+                });
                 try {
-                    url = await launchAttempt(mirrorArgs);
+                    return await launchAttempt(mirrorArgs);
                 } catch (retryError) {
                     const firstMessage = error instanceof Error ? error.message : String(error);
                     const retryMessage = retryError instanceof Error ? retryError.message : String(retryError);
@@ -2463,6 +2481,23 @@ export class DshRuntime implements vscode.Disposable {
                     );
                 }
             }
+        };
+
+        let url: string;
+        try {
+            url = packageManagerNotice
+                ? await vscode.window.withProgress(
+                    {
+                        location: vscode.ProgressLocation.Notification,
+                        title: packageManagerNotice.title,
+                        cancellable: false,
+                    },
+                    async (progress) => {
+                        progress.report({ message: packageManagerNotice.message });
+                        return launchWithFallback(progress);
+                    },
+                )
+                : await launchWithFallback();
         } catch (error) {
             await this.releaseRuntimeLock();
             let message = error instanceof Error ? error.message : String(error);
