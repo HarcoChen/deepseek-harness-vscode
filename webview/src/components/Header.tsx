@@ -4,7 +4,7 @@ import { postAction } from "../bridge";
 import { t } from "../i18n";
 import type { HeaderState } from "../state";
 import { statusLabel, TURN_LABELS } from "../state";
-import { CheckIcon, MoreIcon, PlusIcon, SearchIcon } from "./icons";
+import { CheckIcon, MoreIcon, SearchIcon } from "./icons";
 
 interface HeaderProps {
     status: HeaderState["status"];
@@ -214,14 +214,6 @@ export const Header = React.memo(function Header({
                     {pendingRequestCount}
                 </span>
             ) : null}
-            <button
-                type="button"
-                className="dsh-icon-button"
-                title={t("New session")}
-                onClick={() => postAction({ type: "newSession" })}
-            >
-                <PlusIcon />
-            </button>
             <button
                 type="button"
                 className="dsh-icon-button"

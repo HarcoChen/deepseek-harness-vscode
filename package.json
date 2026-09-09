@@ -218,7 +218,7 @@
                 "command": "dsh.openInBrowser",
                 "title": "%command.openInBrowser.title%",
                 "category": "DSH",
-                "icon": "$(link-external)"
+                "icon": "$(globe)"
             },
             {
                 "command": "dsh.insertEditorReference",
@@ -457,17 +457,17 @@
                 {
                     "command": "dsh.openTrace",
                     "when": "view == dsh.chatView",
-                    "group": "navigation@dsh0.2"
+                    "group": "1_dsh@1"
                 },
                 {
                     "command": "dsh.openLogs",
                     "when": "view == dsh.chatView",
-                    "group": "navigation@dsh2"
+                    "group": "1_dsh@2"
                 },
                 {
                     "command": "dsh.restart",
                     "when": "view == dsh.chatView",
-                    "group": "navigation@dsh3"
+                    "group": "1_dsh@3"
                 }
             ]
         },
