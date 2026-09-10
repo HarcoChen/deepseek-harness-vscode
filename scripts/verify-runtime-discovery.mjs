@@ -14,7 +14,7 @@ const root = resolve(dirname(script), "..");
 const pause = ms => new Promise(done => setTimeout(done, ms));
 if (!process.argv.includes("--worker")) {
     if (process.platform === "win32") throw new Error("This executable-fixture smoke requires POSIX; run Windows validation separately.");
-    for (const scenario of ["local", "prefix", "old", "unknown", "missing", "newer", "npx-fallback", "timeout", "cancel", "explicit-old", "explicit-missing", "explicit-pnpm", "explicit-npx", "legacy-args", "legacy-version"]) {
+    for (const scenario of ["config-local", "config-pnpm", "config-managed", "local", "prefix", "old", "unknown", "missing", "newer", "npx-fallback", "timeout", "cancel", "explicit-old", "explicit-missing", "explicit-pnpm", "explicit-npx", "legacy-args", "legacy-version"]) {
         const directory = await mkdtemp(join(tmpdir(), "dsh-discovery-verify-"));
         try {
             const child = spawn(process.execPath, [script, "--worker", scenario], {
@@ -41,6 +41,7 @@ if (!process.argv.includes("--worker")) {
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 if (args.includes('--version')) {
+    fs.writeFileSync(${JSON.stringify(probeMarker)}, 'started');
     if (${JSON.stringify(version)} === 'hang') {
         fs.writeFileSync(${JSON.stringify(probeMarker)}, 'started');
         setInterval(() => {}, 1000);
@@ -55,15 +56,19 @@ setInterval(() => {}, 1000);
     const localVersion = scenario === "old" || scenario === "explicit-old" || scenario === "prefix" ? "0.1.2-rc.1"
         : scenario === "unknown" ? "not a version" : scenario === "newer" ? "0.1.5-rc.2"
         : ["timeout", "cancel"].includes(scenario) ? "hang" : "0.1.5-rc.1";
-    if (!["missing", "npx-fallback"].includes(scenario)) await executable(join(bin, "dsh"), "local", localVersion);
+    if (!["missing", "npx-fallback", "config-managed"].includes(scenario)) await executable(join(bin, "dsh"), "local", localVersion);
     if (scenario === "prefix") await executable(join(prefix, "bin", "dsh"), "prefix", "0.1.5-rc.1");
-    await executable(join(bin, "npm"), "npm", "11.0.0");
-    if (scenario !== "npx-fallback") await executable(join(bin, "pnpm"), "pnpm", "10.0.0");
-    await executable(join(bin, "npx"), "npx", "11.0.0");
+    if (scenario !== "config-managed") {
+        await executable(join(bin, "npm"), "npm", "11.0.0");
+        if (scenario !== "npx-fallback") await executable(join(bin, "pnpm"), "pnpm", "10.0.0");
+        await executable(join(bin, "npx"), "npx", "11.0.0");
+    }
     process.env.PATH = bin;
     const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
     const defaults = manifest.contributes.configuration.properties;
     const settings = new Map([["enableCompaction", false], ["installWhenMissing", false]]);
+    if (scenario.startsWith("config-")) settings.set("runtimeVersion", "0.1.2-rc.1");
+    if (scenario === "config-pnpm") settings.set("command", "pnpm");
     if (scenario === "explicit-old") settings.set("command", join(bin, "dsh"));
     if (scenario === "explicit-missing") settings.set("command", join(bin, "absent-dsh"));
     if (scenario === "explicit-pnpm") settings.set("command", "pnpm");
@@ -100,7 +105,13 @@ setInterval(() => {}, 1000);
         throw new Error("CLI never launched");
     };
     try {
-        if (scenario === "cancel") {
+        if (scenario.startsWith("config-")) {
+            await assert.rejects(() => runtime.start(directory), /dsh\.runtimeVersion.*0\.1\.2-rc\.1.*0\.1\.5-rc\.1/u);
+            await assert.rejects(() => runtime.diagnoseEnvironment(directory), /dsh\.runtimeVersion/u);
+            await assert.rejects(() => readFile(probeMarker), { code: "ENOENT" });
+            await assert.rejects(() => readFile(marker), { code: "ENOENT" });
+            await assert.rejects(() => readFile(join(directory, "dsh-runtime.lock")), { code: "ENOENT" });
+        } else if (scenario === "cancel") {
             const starting = assert.rejects(() => runtime.start(directory), /cancelled/u);
             const deadline = Date.now() + 3000;
             while (Date.now() < deadline) {

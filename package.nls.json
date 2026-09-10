@@ -52,7 +52,7 @@
     "config.serverPort.description": "Port passed to dsh web when dsh.serverUrl is empty and dsh.commandArgs has no port. Zero asks dsh to choose a free port.",
     "config.autoStart.description": "Start or attach to dsh web automatically when the extension activates. If false, start it from the status label or with DSH: Start dsh Web Runtime.",
     "config.installWhenMissing.description": "When dsh, pnpm, npm and npx are all unavailable, download a standalone DSH Runtime from the pinned release source and manage it locally. Other custom commands are never replaced.",
-    "config.runtimeVersion.description": "Version of the standalone DSH Runtime to download and install when no local dsh toolchain is available. Runtime storage formats may be incompatible across major preview updates.",
+    "config.runtimeVersion.description": "Runtime version for this extension's local launchers and managed download. Only this build's default version is supported; a different value is rejected before discovery or download. Reset this setting after upgrading the extension. Runtime storage formats may be incompatible across preview updates.",
     "config.startupTimeoutMs.description": "Maximum time to wait for the dsh web HTTP health check after starting or attaching.",
     "config.requestTimeoutMs.description": "Maximum time for one Harness RPC, including reconnect history rebaselines. Live assistant output is delivered over WebSocket and is not polled.",
     "config.maxContextBytes.description": "Maximum UTF-8 bytes of the assembled <ide_context> block included in one prompt.",

@@ -52,7 +52,7 @@
     "config.serverPort.description": "当 dsh.serverUrl 为空且 dsh.commandArgs 未指定端口时传给 dsh web 的端口。设为 0 表示自动选择空闲端口。",
     "config.autoStart.description": "扩展激活时自动启动或连接 dsh web。关闭后可点击状态标签，或执行“DSH：启动 dsh Web Runtime”。",
     "config.installWhenMissing.description": "当 dsh、pnpm、npm 和 npx 均不可用时，从固定发布源下载独立 DSH Runtime 并本地托管。不会替换其他自定义命令。",
-    "config.runtimeVersion.description": "本地工具链不可用时，要下载并安装的独立 DSH Runtime 版本；不同预览版本之间的 Runtime 存储格式可能不兼容。",
+    "config.runtimeVersion.description": "本扩展本地启动器及托管下载的 Runtime 版本。仅支持当前扩展的默认版本；其他值会在发现启动器或下载前被拒绝。升级扩展后请重置此设置。不同预览版本之间的存储格式可能不兼容。",
     "config.startupTimeoutMs.description": "启动或连接后等待 dsh web HTTP 健康检查的最长时间。",
     "config.requestTimeoutMs.description": "单次 Harness RPC 的最长时间，包括重连后的历史基线同步。实时助手输出通过 WebSocket 推送，不使用轮询。",
     "config.maxContextBytes.description": "单次 prompt 中组装后的 <ide_context> 块允许使用的最大 UTF-8 字节数。",

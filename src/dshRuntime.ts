@@ -588,6 +588,18 @@ function configuredLaunchArgs(configuration: vscode.WorkspaceConfiguration, comm
     return ["web", "--no-open"];
 }
 
+/** This build's protocol pin applies to every local launcher, including managed downloads. */
+function configuredRuntimeVersion(configuration: vscode.WorkspaceConfiguration): string {
+    const version = configuration.get<string>("runtimeVersion", RUNTIME_DEFAULT_VERSION).trim() || RUNTIME_DEFAULT_VERSION;
+    if (version !== RUNTIME_DEFAULT_VERSION) {
+        throw new RemoteProtocolError(t(
+            "dsh.runtimeVersion is {actual}; this extension only supports {expected}. Reset dsh.runtimeVersion before starting a local Runtime.",
+            { actual: version, expected: RUNTIME_DEFAULT_VERSION },
+        ));
+    }
+    return RUNTIME_DEFAULT_VERSION;
+}
+
 async function probeRuntimeVersion(command: string, options: { cwd?: string; signal?: AbortSignal }): Promise<string | undefined> {
     options.signal?.throwIfAborted();
     try {
@@ -1163,6 +1175,7 @@ export class DshRuntime implements vscode.Disposable {
     /** Returns a redacted, read-only environment report without starting dsh. */
     public async diagnoseEnvironment(workspaceRoot?: string): Promise<string> {
         const configuration = this.configuration();
+        const runtimeVersion = configuredRuntimeVersion(configuration);
         const command = configuration.get<string>("command", "auto").trim() || "auto";
         const configuredArgs = configuredLaunchArgs(configuration, command);
         const args = Array.isArray(configuredArgs)
@@ -1180,7 +1193,6 @@ export class DshRuntime implements vscode.Disposable {
         const prefix = await globalNpmPrefix();
 
         const installWhenMissing = configuration.get<boolean>("installWhenMissing", true);
-        const runtimeVersion = configuration.get<string>("runtimeVersion", RUNTIME_DEFAULT_VERSION) || RUNTIME_DEFAULT_VERSION;
         const npxTimeoutMs = configuration.get<number>("npxTimeoutMs", DEFAULT_NPX_TIMEOUT_MS);
         const npmRegistry = normalizeNpmRegistry(
             configuration.get<string>("npmRegistry", DEFAULT_NPM_REGISTRY),
@@ -2270,6 +2282,7 @@ export class DshRuntime implements vscode.Disposable {
             return url;
         }
 
+        const runtimeVersion = configuredRuntimeVersion(configuration);
         if (this.baseUrl && this.startedByExtension &&
             this.runtimeLock?.record.runtimeVersion === RUNTIME_DEFAULT_VERSION &&
             (await this.isHarnessHealthy(this.baseUrl))) {
@@ -2318,9 +2331,7 @@ export class DshRuntime implements vscode.Disposable {
             launcher = await discoverDsh(command, {
                 storagePath: this.storagePath,
                 installWhenMissing: this.configuration().get<boolean>("installWhenMissing", true),
-                runtimeVersion:
-                    this.configuration().get<string>("runtimeVersion", RUNTIME_DEFAULT_VERSION) ||
-                    RUNTIME_DEFAULT_VERSION,
+                runtimeVersion,
                 configuredArgs,
                 allowManaged: true,
                 cwd: workspaceRoot,

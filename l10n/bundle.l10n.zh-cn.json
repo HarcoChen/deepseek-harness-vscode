@@ -510,5 +510,6 @@
     "The Runtime lock changed while awaiting confirmation. Retry without stopping any process.": "等待确认时 Runtime 锁已变化。未停止任何进程，请重试。",
     "The old Runtime process changed or its owner is still alive. No process was stopped.": "旧 Runtime 进程已变化或所属编辑器仍在运行。未停止任何进程。",
     "The old Runtime did not finish shutting down. Its lock was retained; no forced termination was attempted.": "旧 Runtime 尚未完成退出。已保留锁文件，没有尝试强制终止。",
-    "The Runtime stopped, but its lock changed. Retry to inspect the current lock.": "Runtime 已停止，但锁文件已变化。请重试以检查当前锁。"
+    "The Runtime stopped, but its lock changed. Retry to inspect the current lock.": "Runtime 已停止，但锁文件已变化。请重试以检查当前锁。",
+    "dsh.runtimeVersion is {actual}; this extension only supports {expected}. Reset dsh.runtimeVersion before starting a local Runtime.": "dsh.runtimeVersion 为 {actual}，本扩展仅支持 {expected}。请重置 dsh.runtimeVersion 后再启动本地 Runtime。"
 }
