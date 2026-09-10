@@ -15,9 +15,9 @@ export function spawnOwnedRuntime(command: string, args: string[], options: Spaw
 
 interface ProcessRow { pid: number; group: number; state: string }
 
-async function processRows(): Promise<ProcessRow[]> {
+async function processRows(timeout = 250): Promise<ProcessRow[]> {
     const { stdout } = await execFileAsync("ps", ["-axo", "pid=,pgid=,stat="], {
-        timeout: 250, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
+        timeout, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
     });
     return stdout.trim().split("\n").filter(Boolean).map(line => {
         const [pid, group, state] = line.trim().split(/\s+/u);
@@ -29,16 +29,23 @@ async function processRows(): Promise<ProcessRow[]> {
 }
 
 /** Liveness only: this function never signals any process. Failure to inspect means not proven exited. */
-export async function processGroupHasExited(groupPid: number): Promise<boolean> {
+export async function processGroupHasExited(groupPid: number, timeout = 250): Promise<boolean> {
     if (process.platform === "win32" || !Number.isSafeInteger(groupPid) || groupPid <= 1) return false;
-    try { return !(await processRows()).some(row => row.group === groupPid && !row.state.startsWith("Z")); }
+    try { return !(await processRows(timeout)).some(row => row.group === groupPid && !row.state.startsWith("Z")); }
     catch { return false; }
 }
 
 async function terminateGroup(child: ChildProcess, pid: number): Promise<void> {
+    const shutdownDeadline = Date.now() + 2_500;
     // detached POSIX spawn creates a fresh group whose ID is the child's PID.
     // Revalidate the live leader, if present, before signalling that owned group.
-    const rows = await processRows();
+    let rows: ProcessRow[];
+    try { rows = await processRows(); }
+    catch (error) {
+        // One retry only for a timed-out ps; reserve the TERM/KILL windows.
+        if (!(error as { killed?: boolean }).killed || Date.now() >= shutdownDeadline - 1_950) throw error;
+        rows = await processRows(Math.min(250, shutdownDeadline - Date.now() - 1_750));
+    }
     const leader = rows.find(row => row.pid === pid);
     if (leader && leader.group !== pid) throw new Error("Runtime process group ownership changed; refusing shutdown");
     if (leader && !leader.state.startsWith("Z") && (child.exitCode !== null || child.signalCode !== null)) {
@@ -52,23 +59,30 @@ async function terminateGroup(child: ChildProcess, pid: number): Promise<void> {
     signal("SIGTERM");
     const gracefulDeadline = Date.now() + 1_200;
     while (Date.now() < gracefulDeadline) {
-        if (await processGroupHasExited(pid)) return;
-        await pause(50);
+        if (await processGroupHasExited(pid, Math.max(1, Math.min(250, gracefulDeadline - Date.now())))) return;
+        await pause(Math.max(0, Math.min(50, gracefulDeadline - Date.now())));
     }
     signal("SIGKILL");
-    const killDeadline = Date.now() + 500;
+    const killDeadline = Math.min(shutdownDeadline, Date.now() + 500);
     do {
-        if (await processGroupHasExited(pid)) return;
-        await pause(50);
+        if (await processGroupHasExited(pid, Math.max(1, Math.min(250, killDeadline - Date.now())))) return;
+        await pause(Math.max(0, Math.min(50, killDeadline - Date.now())));
     } while (Date.now() < killDeadline);
     throw new Error(`Owned Runtime process group ${pid} did not exit within the shutdown deadline`);
+}
+
+/** Not a failed kill: the exited Windows wrapper no longer proves tree ownership. */
+export class RuntimeDescendantOwnershipUnknownError extends Error {
+    public constructor() {
+        super("Runtime launcher already exited; descendant ownership cannot be verified on Windows");
+    }
 }
 
 async function terminateWindowsTree(child: ChildProcess, pid: number): Promise<void> {
     // taskkill scopes /T to this still-live child. Never use an image name or a
     // PID recovered from a stale lock, and never chase a reused root PID.
     if (child.exitCode !== null || child.signalCode !== null) {
-        throw new Error("Runtime launcher already exited; descendant ownership cannot be verified on Windows");
+        throw new RuntimeDescendantOwnershipUnknownError();
     }
     await execFileAsync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
         timeout: 2_000, windowsHide: true,

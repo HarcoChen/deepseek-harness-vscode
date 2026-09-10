@@ -63,7 +63,9 @@ export class GoalActivationController {
         if (!sessionId || !ref || this.disposed) return;
         void this.read(sessionId).then((value) => {
             if (this.disposed || epoch !== this.epoch) return;
-            if (value?.id !== ref.id || value.revision !== ref.revision) return;
+            if (value !== undefined && (value.id !== ref.id || value.revision !== ref.revision)) return;
+            // Absence clears the cached activation, including its goal reference.
+            // Keep the observed projection ref so publishing cannot restart this read.
             this.value = value;
             this.onChange();
         }).catch(() => {

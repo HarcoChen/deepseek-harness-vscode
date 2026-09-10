@@ -625,7 +625,7 @@ function streamingAssistantRow(
 
 function assistantAttemptRow(entry: StoredSessionEvent, stepStart: StoredSessionEvent | undefined): ProjectedTraceRow {
     const data = recordData(entry);
-    const chunks = expandAssistantStream(data?.stream);
+    const chunks = data && Object.hasOwn(data, "stream") ? expandAssistantStream(data.stream) : [];
     const group = timedChunkGroup(chunks);
     const location = turnStep(data);
     const reason = group.finishReason;

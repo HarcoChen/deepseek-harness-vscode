@@ -231,7 +231,7 @@ npm run compile
 node scripts/verify-remote-runtime.mjs --launcher /absolute/path/to/dsh
 ```
 
-This smoke run uses a temporary DSH home/workspace and a loopback model stub. It does not use your sessions or external model credentials. The runner requires Node.js with `node:zlib` Zstandard support.
+This smoke run uses a temporary DSH home/workspace and a loopback model stub. It does not use your sessions or external model credentials. The runner requires Node.js >=22.15.0 with `node:zlib` Zstandard support (`zstdCompressSync`; Node 23 users need >=23.8.0).
 
 To verify the managed Runtime release logic:
 

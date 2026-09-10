@@ -17,7 +17,7 @@ import {
     HarnessStreamEnvelope,
 } from "./types";
 import { isRecord } from "./guards";
-import type { AssistantStreamState } from "./assistantStream";
+import type { AssistantSettlement, AssistantStreamState } from "./assistantStream";
 
 /** Exact current Harness SurfaceEventType union from @deepseek-ai/dsh-session. */
 const SURFACE_EVENT_TYPES = new Set([
@@ -723,7 +723,7 @@ export function foldSessionSurface(
 
 class SessionState {
     public assistantStream: AssistantStreamState | undefined;
-    private readonly assistantSettlements = new Map<string, number>();
+    private readonly assistantSettlements = new Map<string, Map<number, AssistantSettlement>>();
     public readonly projections = new GenericProjectionStore();
     public readonly events: SessionEventStore;
     private queueState: AuthoritativeSnapshot<DshQueuedInboxItem> = {
@@ -752,7 +752,9 @@ class SessionState {
             !isSeq(event.seq) || !isRecord(event.data) ||
             !isSeq(event.data.turn) || !isSeq(event.data.step)) return;
         const key = `${event.data.turn}:${event.data.step}`;
-        this.assistantSettlements.set(key, Math.max(this.assistantSettlements.get(key) ?? -1, event.seq));
+        const settlements = this.assistantSettlements.get(key) ?? new Map<number, AssistantSettlement>();
+        settlements.set(event.seq, { seq: event.seq, eventType: event.type });
+        this.assistantSettlements.set(key, settlements);
     }
 
     public rebuildAssistantSettlements(): void {
@@ -760,13 +762,24 @@ class SessionState {
         for (const stored of this.events.ordered()) this.recordAssistantSettlement(stored.event);
     }
 
+    public assistantSettlement(stream: AssistantStreamState, cursor: number): AssistantSettlement | undefined {
+        const settlements = this.assistantSettlements.get(`${stream.turn}:${stream.step}`);
+        let first: AssistantSettlement | undefined;
+        // Retries share turn/step. The first settlement after this attempt began
+        // belongs to it; history may already know settlements from later retries.
+        for (const settlement of settlements?.values() ?? []) {
+            if (settlement.seq > stream.startedAfterSeq && settlement.seq <= cursor &&
+                (!first || settlement.seq < first.seq)) first = settlement;
+        }
+        return first ? { ...first } : undefined;
+    }
+
     private visibleAssistantStream(): AssistantStreamState | undefined {
         const stream = this.assistantStream;
         if (!stream) return undefined;
-        const settledAt = this.assistantSettlements.get(`${stream.turn}:${stream.step}`);
         // A concurrent history read can learn the settlement before the follow stream.
         // Keep its internal attempt available for end-frame validation, but hide its prefix.
-        return settledAt !== undefined && settledAt > stream.startedAfterSeq ? undefined : stream;
+        return this.assistantSettlement(stream, Infinity) ? undefined : stream;
     }
 
     public clearTransientOnSubscribe(receivedAt: number, rpcId: string): void {
@@ -1057,6 +1070,15 @@ export class HarnessSessionStore {
         const state = this.state(sessionId);
         state.assistantStream = stream;
         this.schedulePublish(state);
+    }
+
+    /** Only restore settlements covered by this follow's cursor; history can run ahead. */
+    public assistantSettlement(
+        sessionId: string,
+        stream: AssistantStreamState | undefined,
+        cursor: number,
+    ): AssistantSettlement | undefined {
+        return stream ? this.sessions.get(sessionId)?.assistantSettlement(stream, cursor) : undefined;
     }
 
     public clearRemoteAssistantStreams(): void {

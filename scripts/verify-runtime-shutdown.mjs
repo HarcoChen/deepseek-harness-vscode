@@ -2,12 +2,12 @@
 // Real process/listener smoke in a fresh temp directory; never uses the user's DSH_HOME or locks.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { connect } from "node:net";
+import { connect, createServer } from "node:net";
 
 const script = fileURLToPath(import.meta.url);
 const sleep = milliseconds => new Promise(done => setTimeout(done, milliseconds));
@@ -58,7 +58,25 @@ server.listen(0, '127.0.0.1', () => console.log(JSON.stringify({ pid: process.pi
 spawn(process.execPath, [${JSON.stringify(serverPath)}], { stdio: ['ignore', 'inherit', 'inherit'] });
 setInterval(() => {}, 1000);
 `);
-    for (const mode of ["advertised", "before-url", "stalled-stream"]) {
+    const probeBin = join(tmpdir(), "probe-bin");
+    const probeMarker = join(tmpdir(), "probe-once");
+    if (process.platform !== "win32") {
+        await mkdir(probeBin);
+        await writeFile(join(probeBin, "ps"), `#!/bin/sh
+if [ "$1" = "--warmup" ]; then exit 0; fi
+if [ ! -f ${JSON.stringify(probeMarker)} ]; then
+    printf started > ${JSON.stringify(probeMarker)}
+    exec /bin/sleep 1
+fi
+exec /bin/ps "$@"
+`, { mode: 0o700 });
+        // macOS may inspect a newly created executable before running its body;
+        // warm that path so the timed failure measures ps, not first-run policy.
+        const warmup = spawn(join(probeBin, "ps"), ["--warmup"], { stdio: "ignore" });
+        assert.equal(await new Promise((done, reject) => { warmup.once("error", reject); warmup.once("exit", done); }), 0);
+    }
+    for (const mode of ["advertised", "before-url", "stalled-stream", ...(process.platform === "win32" ? [] : ["ps-retry"])]) {
+    const previousPath = process.env.PATH;
     const child = spawnRuntime(process.execPath, [wrapperPath], {
         detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"], cwd: tmpdir(),
     });
@@ -83,16 +101,19 @@ setInterval(() => {}, 1000);
         if (process.platform !== "win32") owner.runtimeLock.record.runtimeProcessGroup = child.pid;
         await owner.publishRuntimeLockUrl(mode === "before-url" ? undefined : { baseUrl: `http://127.0.0.1:${server.port}` });
         if (mode === "stalled-stream") owner.harnessState.stop = () => new Promise(() => {});
+        if (mode === "ps-retry") process.env.PATH = probeBin;
         const start = Date.now();
         const stopping = Promise.all([owner.dispose(), owner.dispose(), owner.stop()]);
         if (mode === "stalled-stream") await assert.rejects(stopping, /shutdown failed/u);
         else await stopping;
         assert.ok(Date.now() - start < 5000, "shutdown must finish within the host's bounded exit window");
+        if (mode === "ps-retry") assert.ok(Date.now() - start < 2500, "probe retry must leave time for process-tree shutdown");
         assert.equal(await listening(server.port), false, "the wrapper's child listener must stop before dispose resolves");
         await assert.rejects(() => readFile(join(tmpdir(), "dsh-runtime.lock")), { code: "ENOENT" });
         console.log(`PASS ${mode}: bounded concurrent shutdown removes the child listener and then releases the lock`);
         if (mode !== "stalled-stream") await assert.rejects(() => owner.start(tmpdir()), /disposed/u);
     } finally {
+        if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
         // Only this smoke's newly spawned, isolated process group may be cleaned up.
         try { if (process.platform !== "win32") process.kill(-child.pid, "SIGKILL"); else child.kill(); } catch {}
         await sleep(100);
@@ -128,5 +149,65 @@ if (process.argv.includes('--version')) {
         await assert.rejects(() => readFile(join(tmpdir(), "dsh-runtime.lock")), { code: "ENOENT" });
         assert.equal(runtime.getStatus().state, "stopped");
         console.log("PASS stop during asynchronous launcher preparation prevents a late Runtime spawn or lock claim");
+
+        // Real child exit and lock/recovery pipeline, with the unavailable
+        // Windows termination boundary represented by its precise error type.
+        const { RuntimeDescendantOwnershipUnknownError } = require("../dist/runtimeProcess");
+        for (const failure of ["unknown-descendants", "unknown-live-listener", "taskkill-failed", "taskkill-timeout"]) {
+            let survivingListener;
+            const exitMarker = join(tmpdir(), `${failure}.started`);
+            const exitLauncher = join(tmpdir(), `${failure}.cjs`);
+            await writeFile(exitLauncher, `#!${process.execPath}
+if (process.argv.includes('--version')) console.log('0.1.5-rc.1');
+else { require('node:fs').writeFileSync(${JSON.stringify(exitMarker)}, 'started'); setInterval(() => {}, 1000); }
+`, { mode: 0o700 });
+            settings.set("command", exitLauncher);
+            const runtime = new DshRuntime(output, join(tmpdir(), "storage"));
+            runtime.findExistingRuntime = async () => undefined;
+            runtime.harnessState.start = () => {};
+            runtime.waitForReady = async () => {
+                const deadline = Date.now() + 3000;
+                while (Date.now() < deadline) {
+                    try { await readFile(exitMarker); return "http://127.0.0.1:1"; } catch { await sleep(20); }
+                }
+                throw new Error("exit fixture did not start");
+            };
+            const terminate = runtime.terminate.bind(runtime);
+            try {
+                await runtime.start(tmpdir());
+                runtime.runtimeLock.record.runtimeProcess = "wrapper";
+                if (failure === "unknown-live-listener") {
+                    survivingListener = createServer(socket => socket.end());
+                    await new Promise(done => survivingListener.listen(0, "127.0.0.1", done));
+                    await runtime.publishRuntimeLockUrl({ baseUrl: `http://127.0.0.1:${survivingListener.address().port}` });
+                }
+                runtime.terminate = async () => {
+                    if (failure.startsWith("unknown-")) {
+                        throw RuntimeDescendantOwnershipUnknownError ? new RuntimeDescendantOwnershipUnknownError()
+                            : new Error("Runtime launcher already exited; descendant ownership cannot be verified on Windows");
+                    }
+                    throw new Error(failure);
+                };
+                const child = runtime.child;
+                const exited = new Promise(done => child.once("exit", done));
+                child.kill("SIGTERM");
+                await exited;
+                const deadline = Date.now() + 1500;
+                while (Date.now() < deadline && runtime.getStatus().state !== "error" && !runtime.runtimeRecoveryTimer) await sleep(10);
+                assert.equal(Boolean(runtime.runtimeRecoveryTimer), failure.startsWith("unknown-"),
+                    "only the explicit unknown-descendant error may enter guarded recovery");
+                if (!failure.startsWith("unknown-")) assert.equal(runtime.getStatus().state, "error");
+                if (survivingListener) {
+                    assert.ok(runtime.runtimeLock, "guarded recovery must retain a lock with a live listener");
+                    assert.ok(await readFile(join(tmpdir(), "dsh-runtime.lock")));
+                }
+                console.log(`PASS ${failure}: real child exit keeps the correct recovery/error path`);
+            } finally {
+                runtime.cancelRuntimeRecovery();
+                if (survivingListener) await new Promise(done => survivingListener.close(done));
+                runtime.terminate = terminate;
+                await runtime.dispose();
+            }
+        }
     }
 }

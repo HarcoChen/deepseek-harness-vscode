@@ -389,9 +389,14 @@ export class RemoteStateCoordinator implements AsyncDisposable {
                     cursor = snapshot.cursor;
                     assistant.replace(value.assistantStream, cursor);
                     this.sessions.applyRemoteAssistantStream(sessionId, assistant.snapshot);
+                    this.applySession(sessionId, value);
+                    assistant.restoreSettlement(this.sessions.assistantSettlement(sessionId, assistant.snapshot, cursor));
+                    this.sessions.applyRemoteAssistantStream(sessionId, assistant.snapshot);
+                    continue;
                 } else {
                     if (cursor === undefined) throw new Error("Remote session follow omitted its opening snapshot");
                     if (isRecord(value) && value.type === "assistant-stream") {
+                        assistant.restoreSettlement(this.sessions.assistantSettlement(sessionId, assistant.snapshot, cursor));
                         assistant.acceptFrame(value.frame, cursor);
                         this.sessions.applyRemoteAssistantStream(sessionId, assistant.snapshot);
                         continue;

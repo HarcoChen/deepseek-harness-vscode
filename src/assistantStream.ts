@@ -15,6 +15,11 @@ export interface AssistantStreamState {
     chunks: readonly TimedAssistantChunk[];
 }
 
+export interface AssistantSettlement {
+    seq: number;
+    eventType: "assistant/message" | "assistant/attempt";
+}
+
 /** Decode the lossless compact stream embedded in RC 0.1.5 settlements/baselines. */
 export function expandAssistantStream(value: unknown): TimedAssistantChunk[] {
     if (!Array.isArray(value)) throw new Error("Assistant stream must be an array");
@@ -58,7 +63,7 @@ export class RemoteAssistantStream {
     private revision = 0;
     private active: AssistantStreamState | undefined;
     private nextIndex = 0;
-    private settlement: { seq: number; eventType: string } | undefined;
+    private settlement: AssistantSettlement | undefined;
 
     public get snapshot(): AssistantStreamState | undefined {
         return this.settlement ? undefined : this.active;
@@ -94,6 +99,16 @@ export class RemoteAssistantStream {
             event.seq <= attempt.startedAfterSeq || event.data.turn !== attempt.turn || event.data.step !== attempt.step) return;
         if (this.settlement) throw new Error("Remote Assistant attempt settled twice");
         this.settlement = { seq: event.seq, eventType: event.type };
+    }
+
+    /** Restore a settlement already covered by the follow cursor and known history. */
+    public restoreSettlement(settlement: AssistantSettlement | undefined): void {
+        if (!settlement || !this.active) return;
+        if (settlement.seq <= this.active.startedAfterSeq ||
+            (this.settlement && (this.settlement.seq !== settlement.seq || this.settlement.eventType !== settlement.eventType))) {
+            throw new Error("Remote Assistant restored settlement does not match its attempt");
+        }
+        this.settlement = settlement;
     }
 
     public acceptFrame(value: unknown, cursor: number): void {

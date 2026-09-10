@@ -228,7 +228,7 @@ npm run compile
 node scripts/verify-remote-runtime.mjs --launcher /absolute/path/to/dsh
 ```
 
-脚本使用临时 DSH_HOME、工作目录和回环地址上的模拟模型，不使用现有 Session 或外部模型凭据。验证脚本要求 Node.js 的 `node:zlib` 支持 Zstandard。
+脚本使用临时 DSH_HOME、工作目录和回环地址上的模拟模型，不使用现有 Session 或外部模型凭据。验证脚本要求 Node.js >=22.15.0，且 `node:zlib` 支持 Zstandard（`zstdCompressSync`；Node 23 用户需 >=23.8.0）。
 
 验证托管 Runtime 的发布逻辑：
 

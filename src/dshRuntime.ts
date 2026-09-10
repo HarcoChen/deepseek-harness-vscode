@@ -1,5 +1,5 @@
 import { ChildProcess, execFile } from "node:child_process";
-import { spawnOwnedRuntime, terminateOwnedRuntime, withinShutdownDeadline } from "./runtimeProcess";
+import { RuntimeDescendantOwnershipUnknownError, spawnOwnedRuntime, terminateOwnedRuntime, withinShutdownDeadline } from "./runtimeProcess";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access, open, readFile, unlink, writeFile, type FileHandle } from "node:fs/promises";
@@ -1842,7 +1842,8 @@ export class DshRuntime implements vscode.Disposable {
 
     public async getGoalActivation(sessionId: string): Promise<DshGoalActivationState | undefined> {
         const value = await this.apiClient.call("goals/get", { agentId: sessionId });
-        if (value === undefined) return undefined;
+        // The harness omits absent results; also accept an explicit JSON null.
+        if (value === undefined || value === null) return undefined;
         const ref = remoteGoalRef(value);
         if (!ref || !isRemoteRecord(value) || (value.activation !== "armed" && value.activation !== "disarmed")) {
             throw new RemoteProtocolError("Remote goals/get returned an invalid goal activation");
@@ -2533,7 +2534,14 @@ export class DshRuntime implements vscode.Disposable {
                     !this.disposed;
                 const recoveryGeneration = this.runtimeRecoveryGeneration;
                 if (shouldRecover) {
-                    void this.terminate(child).then(async () => {
+                    void this.terminate(child).catch(error => {
+                        if (!(error instanceof RuntimeDescendantOwnershipUnknownError) ||
+                            this.runtimeLock?.record.runtimePid !== child.pid ||
+                            this.runtimeLock?.record.runtimeProcess !== "wrapper") throw error;
+                        // Recovery still checks/reuses the shared endpoint and
+                        // cannot replace a lock whose Runtime may remain alive.
+                        this.output.appendLine(`[dsh] exited wrapper descendants unverified; continuing guarded recovery: ${String(error)}`);
+                    }).then(async () => {
                         if (this.child !== child) return;
                         this.child = undefined;
                         await this.handleUnexpectedRuntimeExit(workspaceRoot, code, exitSignal, recoveryGeneration);
