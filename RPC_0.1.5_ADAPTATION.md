@@ -54,6 +54,8 @@ Workspace follow、session/control 的 queue/jobs/projection、会话 catalog/mo
 
 用户现场的 `assistantStream` opening baseline 错误来自新版扩展复用共享锁公布的 `0.1.2-rc.1` 进程，并非 `0.1.5-rc.1` 的空闲会话缺少 baseline。默认启动版本 pin 不会升级已经运行的旧实例。
 
-按确认后的方案保留公共 `dsh-runtime.lock` 文件名，在内容中追加 `runtimeVersion`、`ownerId`、`runtimePid` 和 `runtimeProcess`。自动发现及缓存复用受版本检查约束；旧锁或未知启动器不会被补写为目标版本。清理要求进程退出及明确的本地端口拒绝，锁修改通过短暂的 `.mutation` 文件串行化，释放校验所有权和文件身份。不能证明失效的锁保留，不停止其他实例。pnpm/npx 在未公布地址前失败时也保留锁并阻止自动换源重试；具体操作边界见 README 的锁清理规则。
+按确认后的方案保留公共 `dsh-runtime.lock` 文件名，在内容中追加 `runtimeVersion`、`ownerId`、`runtimePid` 和 `runtimeProcess`。自动发现及缓存复用受版本检查约束；旧锁或未知启动器不会被补写为目标版本。清理要求进程退出及明确的本地端口拒绝，锁修改通过短暂的 `.mutation` 文件串行化，释放校验所有权和文件身份。
 
-验证：`scripts/verify-runtime-lock.mjs` 的 9 组临时目录/进程/监听器集成检查通过，包括版本不匹配、旧锁、残留监听器、并发回收、所有权替换、缓存重试及遗留修改保护文件；现有 50 项测试与编译通过，未新增或修改单元测试。现场旧锁及旧 Runtime 未被更改或停止。
+后续按用户确认统一迁移和退出行为：旧锁缺少版本字段不再直接判为不可回收，原编辑器已退出且公布的数字回环端口关闭即可迁移。存活孤儿进程必须核实 DSH npm 入口，并经明确确认及二次身份校验后才发送 TERM；不明实例仍保留。正常 deactivate 等待统一、幂等的停止流程，取消启动并停止所属进程树，再释放锁。新 POSIX 启动记录 `runtimeProcessGroup`，解决 pnpm/npx 包装进程提前退出或尚未公布 URL 时的子进程清理问题；不能证明进程树退出时仍保留锁，具体边界见 README。
+
+验证入口：`scripts/verify-runtime-lock.mjs`、`scripts/verify-runtime-migration.mjs`、`scripts/verify-runtime-shutdown.mjs`，使用隔离临时目录、实际子进程及回环监听器检查并发回收、确认取消、锁替换、非 DSH 进程保护、子进程树退出及启动取消。没有新增或修改单元测试。现场旧进程在用户明确授权后停止，旧锁已备份移走，磁盘会话未修改。

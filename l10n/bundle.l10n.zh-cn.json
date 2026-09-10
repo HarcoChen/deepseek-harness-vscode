@@ -500,5 +500,15 @@
     "unknown (unversioned lock or launcher)": "未知（锁文件或启动器未提供版本）",
     "The shared DSH Runtime lock is unreadable or incomplete. Retry after startup finishes; if it persists, inspect the lock and its processes before removing it: {path}": "DSH 共享锁不可读或内容不完整。请等待启动完成后重试；若仍然存在，请检查锁及其进程后再清理：{path}",
     "DSH Runtime lock mutation is busy or abandoned: {path}. Retry; if it persists, verify its owner has exited before manual cleanup.": "DSH Runtime 锁正在更新或更新保护文件已遗留：{path}。请重试；若仍然存在，请确认其所有者已退出后再手动清理。",
-    "The previous DSH launcher may still have a running server. Its lock was retained; inspect the processes before retrying.": "上一次 DSH 启动器的服务可能仍在运行。锁文件已保留，请检查进程后再重试。"
+    "The previous DSH launcher may still have a running server. Its lock was retained; inspect the processes before retrying.": "上一次 DSH 启动器的服务可能仍在运行。锁文件已保留，请检查进程后再重试。",
+    "The shared DSH Runtime is {actual}; this extension requires {expected}. Upgrade the existing Runtime before reconnecting.": "共享 DSH Runtime 为 {actual}，本扩展要求 {expected}。请升级已有 Runtime 后再连接。",
+    "unversioned (legacy lock)": "无版本信息（旧格式锁）",
+    "Retry after stopping the old Runtime": "停止旧 Runtime 后重试",
+    "An older or unversioned DSH Runtime is holding the shared lock. Close the editor that owns it or stop that Runtime, then retry. Once its owner and port are gone, the old lock is reclaimed automatically. Lock: {path}": "旧版或无版本信息的 DSH Runtime 占用了共享锁。请关闭所属编辑器或停止该 Runtime 后重试；确认所有者已退出、端口已关闭后会自动回收旧锁。锁文件：{path}",
+    "Stop old Runtime and upgrade": "停止旧 Runtime 并升级",
+    "Stop the orphan DSH Runtime (PID {pid}, {url}) and start {version}? This interrupts its running tasks and may affect other connected editors. Sessions on disk are kept; unsaved in-flight output may be lost.": "是否停止孤儿 DSH Runtime（PID {pid}，{url}）并启动 {version}？这会中断其运行中的任务，可能影响其他已连接的编辑器。磁盘上的会话会保留，尚未保存的实时输出可能丢失。",
+    "The Runtime lock changed while awaiting confirmation. Retry without stopping any process.": "等待确认时 Runtime 锁已变化。未停止任何进程，请重试。",
+    "The old Runtime process changed or its owner is still alive. No process was stopped.": "旧 Runtime 进程已变化或所属编辑器仍在运行。未停止任何进程。",
+    "The old Runtime did not finish shutting down. Its lock was retained; no forced termination was attempted.": "旧 Runtime 尚未完成退出。已保留锁文件，没有尝试强制终止。",
+    "The Runtime stopped, but its lock changed. Retry to inspect the current lock.": "Runtime 已停止，但锁文件已变化。请重试以检查当前锁。"
 }

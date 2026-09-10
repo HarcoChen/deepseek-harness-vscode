@@ -1,4 +1,5 @@
-import { ChildProcess, execFile, spawn } from "node:child_process";
+import { ChildProcess, execFile } from "node:child_process";
+import { spawnOwnedRuntime, terminateOwnedRuntime, withinShutdownDeadline } from "./runtimeProcess";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access, open, readFile, unlink, writeFile, type FileHandle } from "node:fs/promises";
@@ -11,6 +12,7 @@ import { parseRemoteServerResponse, remoteEndpointUrl } from "./remote/contracts
 import { RemoteHttpError, RemoteProtocolError } from "./remote/errors";
 import { RemoteStateCoordinator } from "./remote/stateCoordinator";
 import { RemoteUnaryClient } from "./remote/unaryClient";
+import { inspectLegacyRuntime, RuntimeMigrationRequiredError, stopLegacyRuntime } from "./runtimeMigration";
 import {
     canReclaimRuntimeLock, exactRuntimeVersion, mutateRuntimeLock, readRuntimeLock, removeRuntimeLock,
     runtimeHasExited, sameRuntimeLockFile, type RuntimeLockRecord,
@@ -560,6 +562,7 @@ interface DiscoverDshOptions {
     /** HTTP(S) proxy URL, e.g. from the VS Code http.proxy setting. */
     proxy?: string;
     onLog?: (message: string) => void;
+    signal?: AbortSignal;
 }
 
 function isPackageManagerSource(source: DshRuntimeSource): source is Extract<DshRuntimeSource, { kind: "npx" | "pnpm" }> {
@@ -780,6 +783,7 @@ function managedLauncher(runtime: ManagedRuntime): DshLauncher {
  * download and install it. Progress is shown in a cancellable notification.
  */
 async function discoverManagedRuntime(options: DiscoverDshOptions): Promise<DshLauncher> {
+    options.signal?.throwIfAborted();
     const storagePath = options.storagePath;
     if (storagePath === undefined) {
         throw new Error(t("The managed DSH Runtime requires a global storage directory."));
@@ -790,6 +794,7 @@ async function discoverManagedRuntime(options: DiscoverDshOptions): Promise<DshL
 
     // Cached runtimes launch directly without any progress UI.
     const cached = await checkInstalled(storagePath, target, version);
+    options.signal?.throwIfAborted();
     if (cached) {
         log(`[dsh:runtime] using managed Runtime ${version} (${target})`);
         return managedLauncher(cached);
@@ -815,7 +820,7 @@ async function discoverManagedRuntime(options: DiscoverDshOptions): Promise<DshL
                     version,
                     target,
                     log,
-                    signal: controller.signal,
+                    signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
                     onPhase: (phase) => progress.report({ message: managedPhaseMessage(phase, version) }),
                     onDownloadProgress: (received, total) => {
                         const percent = Math.min(100, Math.floor((received / total) * 100));
@@ -987,9 +992,16 @@ export class DshRuntime implements vscode.Disposable {
     private authCookie: string | undefined;
     private authPromise: Promise<void> | undefined;
     private startPromise: Promise<string> | undefined;
+    private startAbort: AbortController | undefined;
+    private stopPromise: Promise<void> | undefined;
+    private disposePromise: Promise<void> | undefined;
+    private resourceCleanupDepth = 0;
     private startedByExtension = false;
     private runtimeLock: { handle: FileHandle; path: string; record: RuntimeLockRecord } | undefined;
     private runtimeLockWrite: Promise<void> = Promise.resolve();
+    /** Never serialized: proof from this instance's successful owned-tree cleanup. */
+    private terminatedRuntimeLock: { ownerId: string; runtimePid: number } | undefined;
+    private migrationPromptKey: string | undefined;
     private compactionPatchPath: string | undefined;
     private disposed = false;
     private status: RuntimeStatus = { state: "stopped" };
@@ -1237,6 +1249,7 @@ export class DshRuntime implements vscode.Disposable {
      * cannot race the explicit action.
      */
     private async startWithRecovery(workspaceRoot: string | undefined, fromRecovery: boolean): Promise<string> {
+        if (this.stopPromise) await this.stopPromise;
         if (this.disposed) {
             throw new Error(t("The dsh-ide runtime has already been disposed."));
         }
@@ -1244,13 +1257,23 @@ export class DshRuntime implements vscode.Disposable {
         if (!fromRecovery) this.cancelRuntimeRecovery();
 
         if (this.startPromise) {
+            if (this.startAbort?.signal.aborted) {
+                // A stop cancels asynchronous discovery without waiting for it.
+                // An explicit subsequent start must wait for that cancelled work
+                // to unwind before acquiring a fresh lock and launch generation.
+                await this.startPromise.catch(() => undefined);
+                return this.startWithRecovery(workspaceRoot, fromRecovery);
+            }
             return this.startPromise;
         }
 
-        this.startPromise = this.startInternal(workspaceRoot);
+        const abort = new AbortController();
+        this.startAbort = abort;
+        this.startPromise = this.startInternal(workspaceRoot, abort.signal);
         try {
             return await this.startPromise;
         } catch (error) {
+            if (abort.signal.aborted) throw error;
             if (!this.startedByExtension) {
                 this.baseUrl = undefined;
                 this.launchUrl = undefined;
@@ -1260,32 +1283,57 @@ export class DshRuntime implements vscode.Disposable {
             throw error;
         } finally {
             this.startPromise = undefined;
+            if (this.startAbort === abort) this.startAbort = undefined;
         }
     }
 
     public async restart(workspaceRoot?: string): Promise<string> {
+        this.migrationPromptKey = undefined;
         await this.stop();
         return this.start(workspaceRoot);
     }
 
-    public async stop(): Promise<void> {
+    public stop(): Promise<void> {
+        if (this.stopPromise) return this.stopPromise;
         this.cancelRuntimeRecovery();
-        await this.harnessState.stop();
+        this.startAbort?.abort(new Error("DSH Runtime startup was cancelled"));
+        const stopping = this.stopResources();
+        this.stopPromise = stopping;
+        void stopping.finally(() => {
+            if (this.stopPromise === stopping) this.stopPromise = undefined;
+        }).catch(() => undefined);
+        return stopping;
+    }
+
+    private async stopResources(): Promise<void> {
+        ++this.resourceCleanupDepth;
         this.subagentHistoryCursors.clear();
         const child = this.child;
-        this.child = undefined;
         this.baseUrl = undefined;
         this.launchUrl = undefined;
         this.authCookie = undefined;
         this.authPromise = undefined;
         this.hostDescription = undefined;
 
-        if (child && this.startedByExtension) {
-            await this.terminate(child);
+        const results = await Promise.allSettled([
+            withinShutdownDeadline(this.harnessState.stop(), "Remote state shutdown"),
+            child && this.startedByExtension ? this.terminate(child) : Promise.resolve(),
+        ]);
+        if (results[1]?.status === "fulfilled") {
+            if (this.child === child) this.child = undefined;
+            try {
+                await withinShutdownDeadline(this.releaseRuntimeLock(), "Runtime lock release", 1_500);
+                if (this.runtimeLock) throw new Error("The Runtime lock was retained because shutdown could not be verified");
+            } catch (error) { results.push({ status: "rejected", reason: error }); }
         }
-
-        await this.releaseRuntimeLock();
-
+        --this.resourceCleanupDepth;
+        const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failures.length) {
+            const error = new AggregateError(failures.map(result => result.reason), "DSH Runtime shutdown failed");
+            this.output.appendLine(`[dsh] ${error.message}: ${failures.map(result => String(result.reason)).join("; ")}`);
+            this.setStatus({ state: "error", message: error.message });
+            throw error;
+        }
         this.startedByExtension = false;
         this.setStatus({ state: "stopped" });
     }
@@ -2097,12 +2145,16 @@ export class DshRuntime implements vscode.Disposable {
         });
     }
 
-    public async dispose(): Promise<void> {
+    public dispose(): Promise<void> {
+        if (this.disposePromise) return this.disposePromise;
         this.disposed = true;
-        await this.stop();
+        this.disposePromise = this.stop();
+        return this.disposePromise;
     }
 
-    private async startInternal(workspaceRoot?: string): Promise<string> {
+    private async startInternal(workspaceRoot?: string, signal: AbortSignal = new AbortController().signal): Promise<string> {
+        const checkStarting = (): void => signal.throwIfAborted();
+        checkStarting();
         const configuration = this.configuration();
         const configuredUrl = configuration.get<string>("serverUrl", "").trim();
         const configuredToken = configuration.get<string>("serverToken", "").trim();
@@ -2124,7 +2176,8 @@ export class DshRuntime implements vscode.Disposable {
 
         if (configuredUrl) {
             if (this.child && this.startedByExtension) {
-                await this.stop();
+                await this.stopResources();
+                checkStarting();
                 this.setStatus({ state: "starting", message: t("Connecting to dsh web...") });
             }
             const parsedEndpoint = parseRuntimeEndpoint(configuredUrl);
@@ -2145,6 +2198,7 @@ export class DshRuntime implements vscode.Disposable {
             // during an earlier connection to the same origin.
             this.setRuntimeEndpoint(endpoint, false);
             await this.waitForReady(url, startupTimeout);
+            checkStarting();
             this.baseUrl = url;
             this.startedByExtension = false;
             this.setStatus({ state: "running", url });
@@ -2155,6 +2209,7 @@ export class DshRuntime implements vscode.Disposable {
         if (this.baseUrl && this.startedByExtension &&
             this.runtimeLock?.record.runtimeVersion === RUNTIME_DEFAULT_VERSION &&
             (await this.isHarnessHealthy(this.baseUrl))) {
+            checkStarting();
             this.setStatus({ state: "running", url: this.baseUrl });
             this.harnessState.start();
             return this.baseUrl;
@@ -2165,6 +2220,7 @@ export class DshRuntime implements vscode.Disposable {
         // Harness's web profile defaults to port 3080; an explicit setting wins.
         const configuredPort = this.configuration().get<number>("serverPort", 0);
         const existingEndpoint = await this.findExistingRuntime(configuredPort);
+        checkStarting();
         if (existingEndpoint) {
             this.setRuntimeEndpoint(existingEndpoint);
             this.startedByExtension = false;
@@ -2180,7 +2236,8 @@ export class DshRuntime implements vscode.Disposable {
         }
 
         if (this.child && this.startedByExtension) {
-            await this.stop();
+            await this.stopResources();
+            checkStarting();
             this.setStatus({ state: "starting", message: t("Starting dsh web...") });
         }
 
@@ -2202,14 +2259,17 @@ export class DshRuntime implements vscode.Disposable {
                     RUNTIME_DEFAULT_VERSION,
                 configuredArgs,
                 allowManaged: true,
+                signal,
                 proxy: this.httpProxy(),
-                onLog: (message) => this.output.appendLine(message),
+                onLog: (message) => { if (!signal.aborted) this.output.appendLine(message); },
             });
         } catch (error) {
+            checkStarting();
             const message = error instanceof Error ? error.message : String(error);
             this.setStatus({ state: "error", message });
             throw error;
         }
+        checkStarting();
         command = launcher.command;
         // The managed launcher is an absolute path to the standalone runtime
         // binary; package-manager commandArgs do not apply to it.
@@ -2239,12 +2299,14 @@ export class DshRuntime implements vscode.Disposable {
                 if (exactRuntimeVersion(version)) launchVersion = version;
             } catch { /* Unknown launchers need explicit version identification before owning a shared lock. */ }
         }
+        checkStarting();
         this.requireRuntimeVersion(launchVersion);
 
-        if (!(await this.acquireRuntimeLock(launchVersion!))) {
+        if (!(await this.acquireRuntimeLock(launchVersion!, signal))) {
             const deadline = Date.now() + startupTimeout;
             while (Date.now() < deadline) {
                 const endpoint = await this.findExistingRuntime(configuredPort);
+                checkStarting();
                 if (endpoint) {
                     this.setRuntimeEndpoint(endpoint);
                     this.startedByExtension = false;
@@ -2258,6 +2320,7 @@ export class DshRuntime implements vscode.Disposable {
             this.setStatus({ state: "error", message });
             throw new Error(message);
         }
+        checkStarting();
         if (enableCompaction && isWebProfileArgs(args)) {
             this.compactionPatchPath = join(tmpdir(), `dsh-vscode-${process.pid}-compaction.patch.yml`);
             try {
@@ -2295,6 +2358,7 @@ export class DshRuntime implements vscode.Disposable {
         const activeRegistry = isPackageManagerSource(launcher.source) && !hasExplicitRegistry
             ? await activeNpmRegistry(workspaceRoot, launcher.source.kind)
             : undefined;
+        checkStarting();
         const npmRegistry = hasExplicitRegistry
             ? undefined
             : alternateNpmRegistry(configuredNpmRegistry, activeRegistry);
@@ -2322,10 +2386,12 @@ export class DshRuntime implements vscode.Disposable {
         }
 
         const launchAttempt = async (attemptArgs: string[]): Promise<string> => {
+            checkStarting();
             if (this.runtimeLock?.record.runtimePid !== undefined &&
                 !await runtimeHasExited(this.runtimeLock.record)) {
                 throw new Error(t("The previous DSH launcher may still have a running server. Its lock was retained; inspect the processes before retrying."));
             }
+            checkStarting();
             const candidatePort = portFromArgs(attemptArgs);
             this.baseUrl = candidatePort
                 ? `http://127.0.0.1:${candidatePort}`
@@ -2348,7 +2414,8 @@ export class DshRuntime implements vscode.Disposable {
                     launchEnv.npm_config_fetch_retries = "0";
                 }
             }
-            const child = spawn(command, attemptArgs, {
+            this.terminatedRuntimeLock = undefined;
+            const child = spawnOwnedRuntime(command, attemptArgs, {
                 cwd: workspaceRoot,
                 env: launchEnv,
                 // Windows batch and PowerShell launchers fail with EINVAL unless
@@ -2361,6 +2428,7 @@ export class DshRuntime implements vscode.Disposable {
             this.startedByExtension = true;
             if (this.runtimeLock && child.pid !== undefined) {
                 this.runtimeLock.record.runtimePid = child.pid;
+                if (process.platform !== "win32") this.runtimeLock.record.runtimeProcessGroup = child.pid;
                 this.runtimeLock.record.runtimeProcess = isPackageManagerSource(launcher.source) || launcherNeedsShell(command)
                     ? "wrapper" : "direct";
                 // A new launcher must not inherit the previous attempt's port as liveness evidence.
@@ -2372,6 +2440,7 @@ export class DshRuntime implements vscode.Disposable {
             let launchError: Error | undefined;
             let outputTail = "";
             const recordOutput = (chunk: Buffer, stream: string): void => {
+                if (signal.aborted || this.child !== child) return;
                 const text = chunk.toString("utf8");
                 const safeText = redactRuntimeOutput(text);
                 outputTail = `${outputTail}${safeText}`.slice(-8_000);
@@ -2396,19 +2465,24 @@ export class DshRuntime implements vscode.Disposable {
                 exited = true;
             });
             let ready = false;
-            child.once("close", (code, signal) => {
+            child.once("exit", (code, exitSignal) => {
                 exited = true;
-                this.output.appendLine(`[dsh] exited: code=${code ?? "null"}, signal=${signal ?? "null"}`);
+                this.output.appendLine(`[dsh] exited: code=${code ?? "null"}, signal=${exitSignal ?? "null"}`);
                 const shouldRecover = ready &&
                     this.child === child &&
                     this.startedByExtension &&
+                    !signal.aborted && !this.stopPromise && this.resourceCleanupDepth === 0 &&
                     !this.disposed;
                 const recoveryGeneration = this.runtimeRecoveryGeneration;
-                if (this.child === child) {
-                    this.child = undefined;
-                }
                 if (shouldRecover) {
-                    void this.handleUnexpectedRuntimeExit(workspaceRoot, code, signal, recoveryGeneration);
+                    void this.terminate(child).then(async () => {
+                        if (this.child !== child) return;
+                        this.child = undefined;
+                        await this.handleUnexpectedRuntimeExit(workspaceRoot, code, exitSignal, recoveryGeneration);
+                    }).catch(error => {
+                        this.output.appendLine(`[dsh] failed to clean up exited Runtime descendants: ${String(error)}`);
+                        this.setStatus({ state: "error", message: String(error) });
+                    });
                 }
             });
 
@@ -2425,13 +2499,15 @@ export class DshRuntime implements vscode.Disposable {
             try {
                 // Persist the spawned PID before waiting for HTTP readiness or attempting a retry.
                 await this.publishRuntimeLockUrl();
+                checkStarting();
                 const url = await this.waitForReady(
                     undefined,
                     readinessTimeout,
-                    () => exited,
-                    () => launchError,
+                    () => exited || signal.aborted,
+                    () => signal.aborted ? new Error("DSH Runtime startup was cancelled") : launchError,
                     () => outputTail,
                 );
+                checkStarting();
                 ready = true;
                 this.baseUrl = url;
                 try {
@@ -2445,7 +2521,7 @@ export class DshRuntime implements vscode.Disposable {
                 return url;
             } catch (error) {
                 await this.terminate(child);
-                this.child = undefined;
+                if (this.child === child) this.child = undefined;
                 this.baseUrl = undefined;
                 this.launchUrl = undefined;
                 this.authCookie = undefined;
@@ -2463,6 +2539,7 @@ export class DshRuntime implements vscode.Disposable {
             try {
                 return await launchAttempt(args);
             } catch (error) {
+                checkStarting();
                 const registry = npmRegistry;
                 if (!isPackageManagerSource(launcher.source) || registry === undefined) throw error;
                 const mirrorArgs = withNpmRegistry(args, registry, launcher.source.kind);
@@ -2507,6 +2584,7 @@ export class DshRuntime implements vscode.Disposable {
                 : await launchWithFallback();
         } catch (error) {
             await this.releaseRuntimeLock();
+            checkStarting();
             let message = error instanceof Error ? error.message : String(error);
             if (launcher.source.kind === "managed") {
                 // Keep the freshly installed runtime in place for diagnosis.
@@ -2520,6 +2598,7 @@ export class DshRuntime implements vscode.Disposable {
             throw new Error(message);
         }
 
+        checkStarting();
         this.baseUrl = url;
         this.setStatus({ state: "running", url });
         this.harnessState.start();
@@ -2664,7 +2743,13 @@ export class DshRuntime implements vscode.Disposable {
         if (this.runtimeLock && !this.child && await runtimeHasExited(this.runtimeLock.record)) {
             await this.releaseRuntimeLock();
         }
-        const advertisedEndpoint = await this.readRuntimeEndpoint();
+        let advertisedEndpoint: RuntimeEndpoint | undefined;
+        try {
+            advertisedEndpoint = await this.readRuntimeEndpoint();
+        } catch (error) {
+            if (!(error instanceof RuntimeMigrationRequiredError) || !await this.offerRuntimeMigration(error)) throw error;
+            advertisedEndpoint = await this.readRuntimeEndpoint();
+        }
         if (advertisedEndpoint) {
             this.setRuntimeEndpoint(advertisedEndpoint);
             if (await this.isHarnessHealthy(advertisedEndpoint.baseUrl)) {
@@ -2800,12 +2885,42 @@ export class DshRuntime implements vscode.Disposable {
         ));
     }
 
-    private async acquireRuntimeLock(runtimeVersion: string): Promise<boolean> {
-        this.requireRuntimeVersion(runtimeVersion);
-        return mutateRuntimeLock(join(tmpdir(), RUNTIME_LOCK_FILE), () => this.acquireRuntimeLockExclusive(runtimeVersion));
+    private async offerRuntimeMigration(error: RuntimeMigrationRequiredError): Promise<boolean> {
+        const { snapshot } = error;
+        const key = `${snapshot.path}:${snapshot.contents}`;
+        if (this.disposed || this.startAbort?.signal.aborted || this.migrationPromptKey === key) return false;
+        this.migrationPromptKey = key;
+        const candidate = await inspectLegacyRuntime(snapshot);
+        if (this.disposed || this.startAbort?.signal.aborted) return false;
+        if (!candidate) {
+            const retry = t("Retry after stopping the old Runtime");
+            const answer = await vscode.window.showWarningMessage(
+                t("An older or unversioned DSH Runtime is holding the shared lock. Close the editor that owns it or stop that Runtime, then retry. Once its owner and port are gone, the old lock is reclaimed automatically. Lock: {path}", { path: snapshot.path }),
+                retry,
+            );
+            return !this.disposed && !this.startAbort?.signal.aborted && answer === retry;
+        }
+        const upgrade = t("Stop old Runtime and upgrade");
+        const answer = await vscode.window.showWarningMessage(
+            t("Stop the orphan DSH Runtime (PID {pid}, {url}) and start {version}? This interrupts its running tasks and may affect other connected editors. Sessions on disk are kept; unsaved in-flight output may be lost.", {
+                pid: candidate.pid, url: candidate.baseUrl, version: RUNTIME_DEFAULT_VERSION,
+            }),
+            { modal: true }, upgrade,
+        );
+        if (this.disposed || this.startAbort?.signal.aborted || answer !== upgrade) return false;
+        await stopLegacyRuntime(snapshot, candidate, join(tmpdir(), RUNTIME_LOCK_FILE), this.startAbort?.signal);
+        this.output.appendLine(`[dsh] stopped confirmed legacy Runtime PID ${candidate.pid}; reclaimed its unchanged shared lock`);
+        return true;
     }
 
-    private async acquireRuntimeLockExclusive(runtimeVersion: string): Promise<boolean> {
+    private async acquireRuntimeLock(runtimeVersion: string, signal?: AbortSignal): Promise<boolean> {
+        this.requireRuntimeVersion(runtimeVersion);
+        signal?.throwIfAborted();
+        return mutateRuntimeLock(join(tmpdir(), RUNTIME_LOCK_FILE), () => this.acquireRuntimeLockExclusive(runtimeVersion, signal));
+    }
+
+    private async acquireRuntimeLockExclusive(runtimeVersion: string, signal?: AbortSignal): Promise<boolean> {
+        signal?.throwIfAborted();
         // Legacy locks still participate in exclusion, even when they cannot be reused.
         for (const name of [LEGACY_RUNTIME_LOCK_FILE, RUNTIME_LOCK_FILE]) {
             const existing = await readRuntimeLock(join(tmpdir(), name));
@@ -2813,6 +2928,7 @@ export class DshRuntime implements vscode.Disposable {
             if (!await canReclaimRuntimeLock(existing) || !await removeRuntimeLock(existing)) return false;
             this.output.appendLine(`[dsh] removed stale Runtime lock: ${name} (recorded processes exited; no live listener)`);
         }
+        signal?.throwIfAborted();
         const path = join(tmpdir(), RUNTIME_LOCK_FILE);
         let handle: FileHandle;
         try {
@@ -2826,6 +2942,11 @@ export class DshRuntime implements vscode.Disposable {
         try {
             await handle.writeFile(JSON.stringify(record), "utf8");
             await handle.sync();
+            if (signal?.aborted) {
+                const snapshot = await readRuntimeLock(path);
+                if (snapshot && snapshot.record?.ownerId === record.ownerId) await removeRuntimeLock(snapshot);
+                signal.throwIfAborted();
+            }
             return true;
         } catch (error) {
             this.runtimeLock = undefined;
@@ -2851,7 +2972,9 @@ export class DshRuntime implements vscode.Disposable {
             if (!record) {
                 throw new RemoteProtocolError(t("The shared DSH Runtime lock is unreadable or incomplete. Retry after startup finishes; if it persists, inspect the lock and its processes before removing it: {path}", { path: snapshot.path }));
             }
-            this.requireRuntimeVersion(record.runtimeVersion);
+            if (record.runtimeVersion !== RUNTIME_DEFAULT_VERSION) {
+                throw new RuntimeMigrationRequiredError(snapshot, RUNTIME_DEFAULT_VERSION);
+            }
             endpoint ??= lockRecordEndpoint(record);
         }
         return endpoint;
@@ -2900,7 +3023,11 @@ export class DshRuntime implements vscode.Disposable {
                 if (!current || current.record?.ownerId !== lock.record.ownerId ||
                     !sameRuntimeLockFile(await lock.handle.stat(), current.stat)) return;
                 const neverSpawned = lock.record.runtimePid === undefined && lock.record.url === undefined;
-                if (!neverSpawned && !await runtimeHasExited(lock.record)) {
+                const terminatedBeforeUrl = lock.record.url === undefined && lock.record.launchUrl === undefined &&
+                    this.terminatedRuntimeLock !== undefined &&
+                    this.terminatedRuntimeLock.ownerId === lock.record.ownerId &&
+                    this.terminatedRuntimeLock.runtimePid === lock.record.runtimePid;
+                if (!neverSpawned && !terminatedBeforeUrl && !await runtimeHasExited(lock.record)) {
                     // Retain the identity/handle so a later restart in this editor
                     // can clean up once the descendant has actually exited.
                     this.runtimeLock = lock;
@@ -3035,29 +3162,18 @@ export class DshRuntime implements vscode.Disposable {
     }
 
     private async terminate(child: ChildProcess): Promise<void> {
-        if (child.exitCode !== null || child.signalCode !== null) {
-            return;
+        const lock = this.runtimeLock;
+        // An exited Windows wrapper has untraceable descendants. An exited
+        // direct Runtime can instead be proved absent by its PID and endpoint,
+        // without taskkill or minting process-tree termination evidence.
+        if (process.platform === "win32" && (child.exitCode !== null || child.signalCode !== null) &&
+            lock?.record.runtimePid === child.pid && lock?.record.runtimeProcess === "direct" &&
+            await runtimeHasExited(lock.record)) return;
+        await terminateOwnedRuntime(child);
+        if (lock && this.runtimeLock === lock && lock.record.ownerId && child.pid !== undefined &&
+            lock.record.runtimePid === child.pid) {
+            this.terminatedRuntimeLock = { ownerId: lock.record.ownerId, runtimePid: child.pid };
         }
-
-        await new Promise<void>((resolve) => {
-            let settled = false;
-            const finish = (): void => {
-                if (settled) {
-                    return;
-                }
-                settled = true;
-                resolve();
-            };
-
-            child.once("close", finish);
-            child.kill("SIGTERM");
-            setTimeout(() => {
-                if (!settled) {
-                    child.kill("SIGKILL");
-                    finish();
-                }
-            }, 2_000);
-        });
     }
 
     private configuration(): vscode.WorkspaceConfiguration {

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, open, readFile, unlink } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import { t } from "./localize";
+import { processGroupHasExited } from "./runtimeProcess";
 
 /** `pid` remains the editor PID for peers using the original shared-lock format. */
 export interface RuntimeLockRecord {
@@ -13,6 +14,8 @@ export interface RuntimeLockRecord {
     /** Spawned launcher PID; pnpm/npx may have a surviving server descendant. */
     runtimePid?: number;
     runtimeProcess?: "direct" | "wrapper";
+    /** POSIX group owned by this launch, never the editor's process group. */
+    runtimeProcessGroup?: number;
     url?: string;
     launchUrl?: string;
 }
@@ -52,6 +55,7 @@ export async function readRuntimeLock(path: string): Promise<RuntimeLockSnapshot
                 if (validPid(raw.pid) &&
                     (raw.runtimePid === undefined || validPid(raw.runtimePid)) &&
                     (raw.runtimeProcess === undefined || raw.runtimeProcess === "direct" || raw.runtimeProcess === "wrapper") &&
+                    (raw.runtimeProcessGroup === undefined || (validPid(raw.runtimeProcessGroup) && raw.runtimeProcessGroup === raw.runtimePid)) &&
                     (raw.runtimeVersion === undefined || exactRuntimeVersion(raw.runtimeVersion)) &&
                     (raw.ownerId === undefined || (typeof raw.ownerId === "string" && raw.ownerId.length > 0)) &&
                     (raw.url === undefined || typeof raw.url === "string") &&
@@ -84,11 +88,19 @@ async function listenerHasExited(address: string): Promise<boolean> {
 }
 
 export async function runtimeHasExited(record: RuntimeLockRecord): Promise<boolean> {
-    if (record.runtimePid !== undefined && !processHasExited(record.runtimePid)) return false;
+    if (record.runtimeProcessGroup !== undefined) {
+        if (!await processGroupHasExited(record.runtimeProcessGroup)) return false;
+    } else if (record.runtimePid !== undefined && !processHasExited(record.runtimePid)) return false;
     const address = record.url ?? record.launchUrl;
-    if (!address) return record.runtimePid !== undefined && record.runtimeProcess === "direct";
-    // Legacy endpoint records cannot prove that their server (not the editor) exited.
-    return record.runtimePid !== undefined && listenerHasExited(address);
+    if (!address) return record.runtimeProcessGroup !== undefined ||
+        (record.runtimePid !== undefined && record.runtimeProcess === "direct");
+    if (record.url && record.launchUrl) {
+        try { if (new URL(record.url).origin !== new URL(record.launchUrl).origin) return false; }
+        catch { return false; }
+    }
+    // An old lock has no Runtime PID, but its published listener is still usable
+    // liveness evidence. canReclaim also requires the original editor to be dead.
+    return listenerHasExited(address);
 }
 
 export async function canReclaimRuntimeLock(snapshot: RuntimeLockSnapshot): Promise<boolean> {

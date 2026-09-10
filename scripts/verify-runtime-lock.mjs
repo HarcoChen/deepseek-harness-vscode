@@ -28,9 +28,9 @@ if (!process.argv.includes("--worker")) {
     const require = createRequire(import.meta.url);
     const Module = require("node:module");
     const originalLoad = Module._load;
-    // VS Code is absent in a CLI. The startup path only needs its workspace trust flag.
+    // VS Code is absent in a CLI; default to declining migration prompts.
     Module._load = function (id, ...args) {
-        if (id === "vscode") return { workspace: { isTrusted: true } };
+        if (id === "vscode") return { workspace: { isTrusted: true }, window: { showWarningMessage: async () => undefined } };
         return originalLoad.call(this, id, ...args);
     };
     const { DshRuntime } = require(join(resolve(dirname(script), ".."), "dist/dshRuntime"));
@@ -92,9 +92,13 @@ if (!process.argv.includes("--worker")) {
             await owner.releaseRuntimeLock();
         }
 
-        // An old advertised lock has no reliable Runtime PID: refuse even after its port closes.
-        assert.equal(await runtime().acquireRuntimeLock("0.1.5-rc.1"), false);
-        await rm(path);
+        // Upgrade migration: a dead editor + refused published port reclaims an unversioned legacy lock.
+        const migrated = runtime();
+        assert.equal(await migrated.acquireRuntimeLock("0.1.5-rc.1"), true);
+        assert.equal((await contents()).runtimeVersion, "0.1.5-rc.1");
+        await migrated.releaseRuntimeLock();
+        await absent(path);
+        console.log("PASS unversioned legacy lock migrates after its owner and listener exit");
         // Failure before URL publication cannot prove that a wrapper's descendant exited.
         await writeFile(path, JSON.stringify({ pid: deadPid, runtimePid: deadPid,
             runtimeVersion: "0.1.5-rc.1", runtimeProcess: "wrapper" }));

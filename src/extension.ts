@@ -17,10 +17,30 @@ import { TracePanelManager } from "./tracePanel";
 import { parseTraceLocation } from "./traceProtocol";
 import { TerminalContextStore } from "./terminalContext";
 
+let shutdownRuntime: (() => Promise<void>) | undefined;
+
 export function activate(context: vscode.ExtensionContext): DshExtensionApi {
     configureLocalization((message, args) => vscode.l10n.t(message, args));
-    const output = vscode.window.createOutputChannel("DeepSeek Harness");
+    const rawOutput = vscode.window.createOutputChannel("DeepSeek Harness");
+    let outputDisposed = false;
+    // A cancelled download or late stream callback may finish after shutdown.
+    // Keep diagnostics alive through cleanup and ignore writes after disposal.
+    const output = new Proxy(rawOutput, {
+        get(target, property) {
+            if (property === "append" || property === "appendLine") {
+                return (value: string): void => { if (!outputDisposed) target[property](value); };
+            }
+            const value = Reflect.get(target, property);
+            return typeof value === "function" ? value.bind(target) : value;
+        },
+    });
     const runtime = new DshRuntime(output, context.globalStorageUri.fsPath);
+    let shutdown: Promise<void> | undefined;
+    const stopRuntime = (): Promise<void> => shutdown ??= runtime.dispose().finally(() => {
+        outputDisposed = true;
+        rawOutput.dispose();
+    });
+    shutdownRuntime = stopRuntime;
     const balanceService = new DeepSeekBalanceService(context, output);
     const terminalContext = new TerminalContextStore();
     const debugContextTracker = new DebugContextTracker();
@@ -50,7 +70,6 @@ export function activate(context: vscode.ExtensionContext): DshExtensionApi {
     );
 
     context.subscriptions.push(
-        output,
         balanceService,
         terminalContext,
         debugContextTracker,
@@ -60,7 +79,7 @@ export function activate(context: vscode.ExtensionContext): DshExtensionApi {
         tracePanels,
         conversationNavigation,
         new vscode.Disposable(() => {
-            void runtime.dispose();
+            void stopRuntime().catch(error => console.error("DSH Runtime cleanup failed", error));
         }),
         vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatView, {
             webviewOptions: {
@@ -232,8 +251,9 @@ function registerQuickTaskCommands(chatView: ChatViewProvider): vscode.Disposabl
     ]);
 }
 
-export function deactivate(): void {
-    // The runtime is registered as a disposable in activate().
+export function deactivate(): Promise<void> | undefined {
+    // VS Code awaits this promise; asynchronous Disposable callbacks alone are not awaited.
+    return shutdownRuntime?.();
 }
 
 function workspaceRoot(): string | undefined {
