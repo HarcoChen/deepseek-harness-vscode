@@ -4,7 +4,7 @@ import { postAction } from "../bridge";
 import { t } from "../i18n";
 import type { HeaderState } from "../state";
 import { statusLabel, TURN_LABELS } from "../state";
-import { CheckIcon, MoreIcon, PlusIcon, SearchIcon } from "./icons";
+import { CheckIcon, MoreIcon, SearchIcon } from "./icons";
 
 interface HeaderProps {
     status: HeaderState["status"];
@@ -217,18 +217,10 @@ export const Header = React.memo(function Header({
             <button
                 type="button"
                 className="dsh-icon-button"
-                title={t("New session")}
-                onClick={() => postAction({ type: "newSession" })}
-            >
-                <PlusIcon />
-            </button>
-            <button
-                type="button"
-                className="dsh-icon-button"
                 title={t("Search sessions")}
                 onClick={() => postAction({ type: "searchSession" })}
             >
-                <SearchIcon />
+                <SearchIcon size={16} />
             </button>
             <div className="dsh-menu-anchor" ref={menuRef}>
                 <button
@@ -238,7 +230,7 @@ export const Header = React.memo(function Header({
                     aria-expanded={menuOpen}
                     onClick={() => setMenuOpen((open) => !open)}
                 >
-                    <MoreIcon />
+                    <MoreIcon size={16} />
                 </button>
                 {menuOpen ? (
                     // Disclosure, not the ARIA menu pattern: these are plain buttons

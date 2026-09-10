@@ -128,6 +128,11 @@ button {
     cursor: default;
 }
 
+.dsh-header .dsh-icon-button {
+    width: 30px;
+    height: 30px;
+}
+
 .dsh-badge {
     display: inline-flex;
     align-items: center;
@@ -264,7 +269,7 @@ button {
 .dsh-session-select {
     flex: 1;
     min-width: 0;
-    height: 26px;
+    height: 30px;
     color: var(--vscode-dropdown-foreground);
     background: var(--vscode-dropdown-background);
     border: 1px solid var(--vscode-dropdown-border);
