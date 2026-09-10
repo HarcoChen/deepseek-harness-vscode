@@ -9,6 +9,8 @@
 
 <!-- 在这里填写下一版本的发布说明；npm run release 会自动提升这一节。 -->
 
+## [0.9.2] - 2026-09-10
+
 ### Runtime 兼容性
 
 - 默认启动器改为 `auto`：优先探测并使用兼容的本机 DSH，否则回退固定版本的 pnpm/npx。显式启动器配置保持优先，不修改全局安装；按启动器补齐默认参数，兼容已保存的旧包管理器参数。已有共享锁的版本和迁移检查不变。
@@ -221,6 +223,7 @@
 
 - 首个社区预览版本，提供 `dsh web` Runtime 集成、侧栏聊天和 IDE 上下文附加。
 
+[0.9.2]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.7.0-beta.1...v0.9.0
 [0.7.0-beta.1]: https://github.com/HarcoChen/dsh-vsc-integration/compare/v0.6.2...v0.7.0-beta.1
