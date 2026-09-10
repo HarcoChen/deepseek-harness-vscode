@@ -653,6 +653,13 @@ export interface DshGoalRef {
 
 export type DshGoalPhase = "active" | "paused" | "blocked" | "complete";
 
+export type DshGoalActivation = "armed" | "disarmed";
+
+/** Process-local activation applies only to this exact durable goal revision. */
+export interface DshGoalActivationState extends DshGoalRef {
+    activation: DshGoalActivation;
+}
+
 export interface DshGoalBlockReason {
     code: string;
     message: string;
@@ -751,8 +758,8 @@ export interface DshCommandDescriptor {
     /** Present when the command accepts free-form input after its name. */
     input?: {
         hint: string;
-        /** Whether composer image attachments may accompany an invocation. */
-        images?: boolean;
+        /** Whether composer attachments may accompany an invocation. */
+        attachments?: boolean;
     };
     [key: string]: unknown;
 }
@@ -1394,6 +1401,7 @@ export interface HostBaselineView {
 export interface GoalHudView {
     state: "empty" | "present" | "invalid";
     goal?: DshGoalSnapshot;
+    activation?: DshGoalActivation;
     roundsStarted?: number;
     createdAt?: number;
     updatedAt?: number;

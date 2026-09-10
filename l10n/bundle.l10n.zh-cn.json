@@ -1,4 +1,5 @@
 {
+    "Configured dsh Runtime does not expose RC Remote RPC (HTTP 404). Upgrade dsh to {version}.": "配置的 dsh Runtime 未提供 RC Remote RPC（HTTP 404）。请将 dsh 升级至 {version}。",
     "Agent Preset files: {path}": "Agent Preset 文件：{path}",
     "An Agent Preset with this ID already exists.": "已存在使用此 ID 的 Agent Preset。",
     "Broken: {reason}": "已损坏：{reason}",

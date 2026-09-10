@@ -717,7 +717,9 @@ export function projectChatMessages(
         const location = assistantLocation(stored);
         if (location) finalizedLocations.add(location);
     }
-    for (const node of snapshot.surface.nodes) {
+    // Model-visible replacements must not erase the conversation already shown to the user.
+    for (const node of snapshot.events) {
+        if (node.event.surfaceOp !== "append") continue;
         if (directUser(node)) {
             const optimisticMatch = matchBySeq.get(node.event.seq);
             const message = messageRecord(node);
@@ -799,6 +801,19 @@ export function projectChatMessages(
         }
         partial.lastTime = event.time;
         foldPartialChunk(partial, chunk);
+    }
+    const live = snapshot.assistantStream;
+    if (live) {
+        const partial: PartialMessage = {
+            key: live.attemptId,
+            turn: live.turn,
+            step: live.step,
+            firstSeq: live.startedAfterSeq,
+            lastTime: live.chunks.at(-1)?.time ?? 0,
+            blocks: new Map(),
+        };
+        for (const timed of live.chunks) foldPartialChunk(partial, timed.chunk);
+        partials.set(live.attemptId, partial);
     }
     for (const partial of partials.values()) {
         const blocks = [...partial.blocks.entries()].sort(([left], [right]) => left - right);

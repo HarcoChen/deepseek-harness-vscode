@@ -17,9 +17,11 @@ import {
     HarnessStreamEnvelope,
 } from "./types";
 import { isRecord } from "./guards";
+import type { AssistantStreamState } from "./assistantStream";
 
 /** Exact current Harness SurfaceEventType union from @deepseek-ai/dsh-session. */
 const SURFACE_EVENT_TYPES = new Set([
+    "system/message",
     "user/message",
     "assistant/message",
     "tool/result",
@@ -85,6 +87,7 @@ export interface AuthoritativeSnapshot<T> {
 
 export interface SessionStateSnapshot {
     sessionId: string;
+    assistantStream?: AssistantStreamState;
     events: readonly StoredSessionEvent[];
     surface: SessionSurfaceSnapshot;
     projections: readonly ProjectionCell[];
@@ -719,6 +722,8 @@ export function foldSessionSurface(
 }
 
 class SessionState {
+    public assistantStream: AssistantStreamState | undefined;
+    private readonly assistantSettlements = new Map<string, number>();
     public readonly projections = new GenericProjectionStore();
     public readonly events: SessionEventStore;
     private queueState: AuthoritativeSnapshot<DshQueuedInboxItem> = {
@@ -738,6 +743,30 @@ class SessionState {
         onDiagnostic?: (diagnostic: SessionStoreDiagnostic) => void,
     ) {
         this.events = new SessionEventStore(sessionId, onDiagnostic);
+    }
+
+    public recordAssistantSettlement(value: DshHistoryEvent): void {
+        const event = normalizeEvent(value);
+        if (!event || (event.type !== "assistant/attempt" && event.type !== "assistant/message") ||
+            (event.type === "assistant/message" && event.surfaceOp !== "append") ||
+            !isSeq(event.seq) || !isRecord(event.data) ||
+            !isSeq(event.data.turn) || !isSeq(event.data.step)) return;
+        const key = `${event.data.turn}:${event.data.step}`;
+        this.assistantSettlements.set(key, Math.max(this.assistantSettlements.get(key) ?? -1, event.seq));
+    }
+
+    public rebuildAssistantSettlements(): void {
+        this.assistantSettlements.clear();
+        for (const stored of this.events.ordered()) this.recordAssistantSettlement(stored.event);
+    }
+
+    private visibleAssistantStream(): AssistantStreamState | undefined {
+        const stream = this.assistantStream;
+        if (!stream) return undefined;
+        const settledAt = this.assistantSettlements.get(`${stream.turn}:${stream.step}`);
+        // A concurrent history read can learn the settlement before the follow stream.
+        // Keep its internal attempt available for end-frame validation, but hide its prefix.
+        return settledAt !== undefined && settledAt > stream.startedAfterSeq ? undefined : stream;
     }
 
     public clearTransientOnSubscribe(receivedAt: number, rpcId: string): void {
@@ -947,6 +976,7 @@ class SessionState {
     public snapshot(): SessionStateSnapshot {
         return {
             sessionId: this.sessionId,
+            assistantStream: this.visibleAssistantStream(),
             events: this.events.ordered(),
             surface: this.events.surface(),
             projections: this.projections.snapshot(),
@@ -989,6 +1019,7 @@ export class HarnessSessionStore {
     public rebaseline(sessionId: string, history: DshHistoryResult): SessionStateSnapshot {
         const state = this.state(sessionId);
         state.events.ingestHistory(history.events);
+        for (const entry of history.events) state.recordAssistantSettlement(entry.event);
         if (history.projections) {
             state.projections.seed(history.projections);
         }
@@ -1003,6 +1034,7 @@ export class HarnessSessionStore {
     ): SessionStateSnapshot {
         const state = this.state(sessionId);
         state.events.replaceHistory(history.events);
+        state.rebuildAssistantSettlements();
         if (cursor !== undefined) state.events.followCursor(cursor, history.hasMore === true);
         if (history.projections) state.projections.seed(history.projections);
         return this.publish(state);
@@ -1016,7 +1048,23 @@ export class HarnessSessionStore {
         }
         const state = this.state(sessionId);
         state.events.ingestLive(event as unknown as DshSessionEvent);
+        state.recordAssistantSettlement(event as unknown as DshSessionEvent);
         this.schedulePublish(state);
+    }
+
+    /** Update transient model output without consuming a durable journal sequence. */
+    public applyRemoteAssistantStream(sessionId: string, stream: AssistantStreamState | undefined): void {
+        const state = this.state(sessionId);
+        state.assistantStream = stream;
+        this.schedulePublish(state);
+    }
+
+    public clearRemoteAssistantStreams(): void {
+        for (const state of this.sessions.values()) {
+            if (!state.assistantStream) continue;
+            state.assistantStream = undefined;
+            this.schedulePublish(state);
+        }
     }
 
     public applyRemoteProjection(sessionId: string, key: string, value: unknown, seq: number): void {
@@ -1120,6 +1168,7 @@ export class HarnessSessionStore {
                 }
                 const state = this.state(sessionId);
                 state.events.ingestLive(frame.event as unknown as DshSessionEvent, frame.view);
+                state.recordAssistantSettlement(frame.event as unknown as DshSessionEvent);
                 this.schedulePublish(state);
                 return;
             }

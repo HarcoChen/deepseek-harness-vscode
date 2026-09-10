@@ -24,6 +24,7 @@ import {
     DshCommandDescriptor,
     DshCommandExecution,
     DshGoalRef,
+    DshGoalActivationState,
     DshGoalRefResult,
     DshHistoryResult,
     DshSessionCreateResult,
@@ -89,20 +90,13 @@ import { normalizePluginInventory } from "./pluginInventory";
 type RuntimeListener = (status: RuntimeStatus) => void;
 type HarnessConnectedListener = () => void;
 /** One allowlisted host cordis event forwarded verbatim by the Runtime. */
-type RemoteEventListener = (event: string) => void;
+type RemoteEventListener = (event: string, args: readonly unknown[]) => void;
 const execFileAsync = promisify(execFile);
 const DEFAULT_NPX_TIMEOUT_MS = 120_000;
 const DEFAULT_PACKAGE_MANAGER_FETCH_TIMEOUT_MS = 30_000;
 const DEFAULT_NPM_REGISTRY = "https://registry.npmmirror.com";
 const OFFICIAL_NPM_REGISTRY = "https://registry.npmjs.org";
 const NPM_REGISTRY_QUERY_TIMEOUT_MS = 5_000;
-/** Temporary DeepSeek model exposed by the official endpoint before catalog refresh. */
-const FORCED_DEEPSEEK_PROVIDER = "deepseek-official";
-const FORCED_DEEPSEEK_MODEL_ID = "deepseek-v4.1-flash-expires-on-0910";
-/** Keep the temporary route visible through 2026-09-10, then stop advertising it. */
-const FORCED_DEEPSEEK_MODEL_LAST_VISIBLE_AT = Date.UTC(2026, 8, 11);
-const FORCED_DEEPSEEK_MODEL_DESCRIPTION =
-    "Temporary text-only route; available through 2026-09-10.";
 /** Bounded recovery delays for a Runtime launched by this extension. */
 const RUNTIME_RECOVERY_DELAYS_MS = [1_000, 5_000, 15_000] as const;
 type PackageManager = "npx" | "pnpm";
@@ -122,49 +116,6 @@ const LEGACY_RUNTIME_LOCK_FILE = "dsh-vscode-runtime.lock";
 
 function delay(milliseconds: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function appendTemporaryDeepSeekModel(
-    groups: DshSessionModelsResult["groups"],
-): DshSessionModelsResult["groups"] {
-    if (Date.now() >= FORCED_DEEPSEEK_MODEL_LAST_VISIBLE_AT) return groups;
-
-    return groups.map((group) => {
-        if (
-            group.id !== FORCED_DEEPSEEK_PROVIDER ||
-            group.models.some((model) => model.id === FORCED_DEEPSEEK_MODEL_ID)
-        ) {
-            return group;
-        }
-
-        // The unlisted model is resolved by Harness as text-only. Reuse the
-        // provider's configured reasoning metadata so /effort remains aligned
-        // with the active connection instead of inventing a model capability.
-        const reasoning = group.models.find(
-            (model) => (model.reasoning?.efforts.length ?? 0) > 0,
-        )?.reasoning;
-        return {
-            ...group,
-            models: [
-                ...group.models,
-                {
-                    id: FORCED_DEEPSEEK_MODEL_ID,
-                    name: FORCED_DEEPSEEK_MODEL_ID,
-                    description: FORCED_DEEPSEEK_MODEL_DESCRIPTION,
-                    ...(reasoning === undefined
-                        ? {}
-                        : {
-                              reasoning: {
-                                  efforts: reasoning.efforts.map((effort) => ({ ...effort })),
-                                  ...(reasoning.defaultEffort === undefined
-                                      ? {}
-                                      : { defaultEffort: reasoning.defaultEffort }),
-                              },
-                          }),
-                },
-            ],
-        };
-    });
 }
 
 /**
@@ -1094,7 +1045,8 @@ export class DshRuntime implements vscode.Disposable {
                 if (frame.type !== "host/remote-event") return;
                 const event = (frame as { event?: unknown }).event;
                 if (typeof event !== "string") return;
-                for (const listener of this.remoteEventListeners) listener(event);
+                const args = (frame as { args?: unknown }).args;
+                for (const listener of this.remoteEventListeners) listener(event, Array.isArray(args) ? args : []);
             },
             onDiagnostic: (message, cause) => {
                 const suffix = cause === undefined ? "" : `: ${String(cause)}`;
@@ -1115,9 +1067,8 @@ export class DshRuntime implements vscode.Disposable {
     }
 
     /**
-     * Fires for each forwarded host event, by its own cordis name. Consumers
-     * treat these as invalidation signals and repull, because the forwarding
-     * path carries no diff.
+     * Fires for each forwarded host event with its original Cordis arguments.
+     * Consumers may apply event payloads or use them as cache invalidations.
      */
     public onDidRemoteEvent(listener: RemoteEventListener): vscode.Disposable {
         this.remoteEventListeners.add(listener);
@@ -1386,12 +1337,14 @@ export class DshRuntime implements vscode.Disposable {
     ): Promise<DshSessionCreateResult> {
         const result = await this.apiClient.call<DshSessionCreateResult>("session/create", {
             request: {
-                ...(workspaceId === undefined ? {} : { workspaceId }),
-                ...(cwd === undefined ? {} : { cwd }),
+                // DSH resolves the directory from the selected Workspace.
+                ...(workspaceId !== undefined ? { workspaceId } : cwd === undefined ? {} : { cwd }),
                 ...(agentPreset === undefined ? {} : { agentPreset }),
             },
         });
-        this.harnessState.catalog.upsertCreated(result.sessionId, cwd, {
+        const sessionCwd = workspaceId === undefined ? cwd : this.harnessState.catalog.snapshot()
+            .workspaces.find((workspace) => workspace.workspaceId === workspaceId)?.path;
+        this.harnessState.catalog.upsertCreated(result.sessionId, sessionCwd, {
             ...(result.agentPreset === undefined ? {} : { agentPreset: result.agentPreset }),
         });
         this.harnessState.watchSession(result.sessionId);
@@ -1619,7 +1572,7 @@ export class DshRuntime implements vscode.Disposable {
         return {
             current,
             routable: catalog.routableProviders.includes(current.provider),
-            groups: appendTemporaryDeepSeekModel(catalog.groups),
+            groups: catalog.groups,
             failures: catalog.failures,
         };
     }
@@ -1772,6 +1725,16 @@ export class DshRuntime implements vscode.Disposable {
         action: HarnessQueueAction,
     ): Promise<void> {
         await this.apiClient.call("session/updateQueue", { request: { sessionId, itemId, action } });
+    }
+
+    public async getGoalActivation(sessionId: string): Promise<DshGoalActivationState | undefined> {
+        const value = await this.apiClient.call("goals/get", { agentId: sessionId });
+        if (value === undefined) return undefined;
+        const ref = remoteGoalRef(value);
+        if (!ref || !isRemoteRecord(value) || (value.activation !== "armed" && value.activation !== "disarmed")) {
+            throw new RemoteProtocolError("Remote goals/get returned an invalid goal activation");
+        }
+        return { ...ref, activation: value.activation };
     }
 
     public createGoal(
@@ -1929,12 +1892,15 @@ export class DshRuntime implements vscode.Disposable {
     ): Promise<DshSubagentPromptResult> {
         const clientTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
         return this.apiClient.call("subagents/prompt", {
-            parentSessionId: address.parentSessionId,
-            childSessionId: address.childSessionId,
-            mode: address.mode,
-            requestId: randomUUID(),
-            content: [{ type: "text", text }],
-            ...(clientTimeZone ? { clientTimeZone } : {}),
+            request: {
+                parentSessionId: address.parentSessionId,
+                childSessionId: address.childSessionId,
+                mode: address.mode,
+                delivery: "queue",
+                requestId: randomUUID(),
+                content: [{ type: "text", text }],
+                ...(clientTimeZone ? { clientTimeZone } : {}),
+            },
         }, signal);
     }
 
@@ -2079,7 +2045,7 @@ export class DshRuntime implements vscode.Disposable {
 
     public async describeHost(): Promise<HarnessHostDescription> {
         return this.hostDescription ?? {
-            version: "0.1.2-rc.1",
+            version: RUNTIME_DEFAULT_VERSION,
             cwd: "",
             attachedSessions: this.harnessState.catalog.snapshot().sessions.length,
             canOpenPath: true,
@@ -2113,8 +2079,8 @@ export class DshRuntime implements vscode.Disposable {
      * a `command/run` / `command/done` pair on the session. `undefined` means
      * the line resolved to no registered command.
      *
-     * Images are handed over verbatim; the host executor enforces each
-     * command's own `input.images` declaration and settles a non-declaring
+     * Images are tagged as submitted attachments; the host executor enforces each
+     * command's own `input.attachments` declaration and settles a non-declaring
      * invocation as an error before its handler runs.
      */
     public async executeCommand(
@@ -2122,7 +2088,11 @@ export class DshRuntime implements vscode.Disposable {
         line: string,
         images: readonly DshImageUpload[] = [],
     ): Promise<DshCommandExecution | undefined> {
-        return this.apiClient.call("commands/execute", { agentId: sessionId, line, images });
+        return this.apiClient.call("commands/execute", {
+            agentId: sessionId,
+            line,
+            submittedAttachments: images.map((image) => ({ type: "image", ...image })),
+        });
     }
 
     public async dispose(): Promise<void> {
@@ -2724,7 +2694,7 @@ export class DshRuntime implements vscode.Disposable {
                 }
                 if (failFast && response.status === 404) {
                     throw new RemoteProtocolError(
-                        t("Configured dsh Runtime does not expose RC Remote RPC (HTTP 404). Upgrade dsh to 0.1.2-rc.1."),
+                        t("Configured dsh Runtime does not expose RC Remote RPC (HTTP 404). Upgrade dsh to {version}.", { version: RUNTIME_DEFAULT_VERSION }),
                     );
                 }
                 return false;

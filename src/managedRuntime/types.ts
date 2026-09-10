@@ -62,7 +62,7 @@ export interface RuntimeDownloadProvider {
 }
 
 /** Pinned runtime version; never request "latest" from a remote manifest. */
-export const RUNTIME_DEFAULT_VERSION = "0.1.2-rc.1";
+export const RUNTIME_DEFAULT_VERSION = "0.1.5-rc.1";
 
 /** Download source for the first version; reserved for a future GitHub provider. */
 export const RUNTIME_DOWNLOAD_SOURCE = "cnb" as const;

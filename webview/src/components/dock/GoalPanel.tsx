@@ -1,6 +1,8 @@
 import React from "react";
 import type { GoalHudView } from "../../../../src/types";
 import { t } from "../../i18n";
+import { postAction } from "../../bridge";
+import { goalActionAllowed } from "../../../../src/goalActions";
 
 const GOAL_PHASE_LABELS: Readonly<Record<NonNullable<GoalHudView["goal"]>["phase"], string>> = {
     active: "In progress",
@@ -81,12 +83,25 @@ export function GoalPanel({ goal }: { goal: GoalHudView }): React.JSX.Element {
             </div>
             <div className="dsh-card-detail">
                 {t("{phase} · round {started}/{maximum}", {
-                    phase: t(GOAL_PHASE_LABELS[current.phase]),
+                    phase: t(current.phase === "active" && goal.activation === "disarmed"
+                        ? "Waiting for resume" : GOAL_PHASE_LABELS[current.phase]),
                     started: roundsStarted,
                     maximum: current.maxGoalRounds,
                 })}
             </div>
             <GoalHint />
+            {current.phase === "active" && goal.activation === "disarmed" ? (
+                <div className="dsh-card-actions">
+                    <button
+                        type="button"
+                        className="dsh-button"
+                        disabled={goal.pending || !goalActionAllowed(
+                            current.phase, "resume", roundsStarted, current.maxGoalRounds, goal.activation,
+                        )}
+                        onClick={() => postAction({ type: "goalResume" })}
+                    >{t("Resume")}</button>
+                </div>
+            ) : null}
             {current.blockedReason ? (
                 <div className="dsh-goal-blocked" role="status">
                     <strong>{t("Blocked")}</strong>

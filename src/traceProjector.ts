@@ -4,6 +4,7 @@ import {
     StoredSessionEvent,
 } from "./sessionStore";
 import { isRecord } from "./guards";
+import { expandAssistantStream, TimedAssistantChunk } from "./assistantStream";
 
 export type TraceRowCategory =
     | "boundary"
@@ -355,26 +356,33 @@ function projectedRow(
 
 interface ChunkGroup {
     entries: StoredSessionEvent[];
+    chunkCount?: number;
     text: string;
     reasoning: string;
     firstTokenTime?: number;
     usage?: TraceTokenUsage;
+    finishReason?: string;
+    error?: string;
 }
 
-function addUsage(previous: TraceTokenUsage | undefined, next: TraceTokenUsage): TraceTokenUsage {
-    return {
-        inputTokens: (previous?.inputTokens ?? 0) + next.inputTokens,
-        outputTokens: (previous?.outputTokens ?? 0) + next.outputTokens,
-        ...((previous?.cacheReadTokens === undefined && next.cacheReadTokens === undefined)
-            ? {}
-            : { cacheReadTokens: (previous?.cacheReadTokens ?? 0) + (next.cacheReadTokens ?? 0) }),
-        ...((previous?.cacheWriteTokens === undefined && next.cacheWriteTokens === undefined)
-            ? {}
-            : { cacheWriteTokens: (previous?.cacheWriteTokens ?? 0) + (next.cacheWriteTokens ?? 0) }),
-        ...((previous?.reasoningTokens === undefined && next.reasoningTokens === undefined)
-            ? {}
-            : { reasoningTokens: (previous?.reasoningTokens ?? 0) + (next.reasoningTokens ?? 0) }),
-    };
+function timedChunkGroup(chunks: readonly TimedAssistantChunk[]): ChunkGroup {
+    const group: ChunkGroup = { entries: [], chunkCount: chunks.length, text: "", reasoning: "" };
+    for (const { time, chunk } of chunks) {
+        const text = chunk.type === "tool-call-delta" ? chunk.argumentsDelta : chunk.text;
+        if ((chunk.type === "text-delta" || chunk.type === "reasoning-delta" || chunk.type === "tool-call-delta") && typeof text === "string") {
+            const channel = chunk.type === "reasoning-delta" ? "reasoning" : "text";
+            group[channel] = truncate(`${group[channel]}${text}`, 16_000);
+            if ((text || (chunk.type === "tool-call-delta" && typeof chunk.name === "string")) &&
+                group.firstTokenTime === undefined) group.firstTokenTime = time;
+        } else if (chunk.type === "usage") {
+            group.usage = tokenUsage(chunk.usage) ?? group.usage;
+        } else if (chunk.type === "finish") {
+            const reason = isRecord(chunk.reason) ? chunk.reason : undefined;
+            group.finishReason = typeof reason?.kind === "string" ? reason.kind : undefined;
+            group.error = errorMessage(reason?.failure);
+        }
+    }
+    return group;
 }
 
 function chunkGroups(entries: readonly StoredSessionEvent[]): Map<string, ChunkGroup> {
@@ -399,7 +407,7 @@ function chunkGroups(entries: readonly StoredSessionEvent[]): Map<string, ChunkG
             if (chunk.argumentsDelta.length > 0 && current.firstTokenTime === undefined) current.firstTokenTime = entry.event.time;
         } else if (chunk.type === "usage") {
             const usage = tokenUsage(chunk.usage);
-            if (usage) current.usage = addUsage(current.usage, usage);
+            if (usage) current.usage = usage;
         }
         groups.set(key, current);
     }
@@ -463,6 +471,9 @@ function genericRow(
         category = replaced ? "compaction" : source?.kind === "user" ? "user" : "context";
         summary = oneLine(text || `[${String(source?.kind ?? "user")}]`, 500);
         if (typeof source?.kind === "string") extra.push({ label: "Source", value: source.kind });
+    } else if (event.type === "system/message") {
+        category = "system";
+        summary = oneLine(contentText(messageContent(data), 6_000) || "System prompt cleared", 500);
     } else if (event.type === "request/header") {
         category = "system";
         const header = isRecord(data?.header) ? data.header : undefined;
@@ -559,14 +570,15 @@ function assistantRow(
         ...(typeof source?.provider === "string" ? [{ label: "Provider", value: source.provider }] : []),
         ...(typeof source?.model === "string" ? [{ label: "Model", value: source.model }] : []),
         ...(ttft === undefined || ttft < 0 ? [] : [{ label: "TTFT", value: `${ttft} ms` }]),
-        ...(chunks === undefined ? [] : [{ label: "Stream events", value: String(chunks.entries.length) }]),
+        ...(chunks === undefined ? [] : [{ label: "Stream events", value: String(chunks.chunkCount ?? chunks.entries.length) }]),
+        ...(data?.interrupted === true ? [{ label: "Interrupted", value: "true" }] : []),
     ];
     return projectedRow(row, {
         event: entry.event,
         ...(entry.view === undefined ? {} : { view: entry.view }),
         ...(chunks === undefined ? {} : {
             stream: {
-                eventCount: chunks.entries.length,
+                eventCount: chunks.chunkCount ?? chunks.entries.length,
                 firstSeq: chunks.entries[0]?.event.seq,
                 lastSeq: chunks.entries.at(-1)?.event.seq,
                 firstTokenTime: chunks.firstTokenTime,
@@ -607,6 +619,65 @@ function streamingAssistantRow(
         chunks.reasoning,
     ], [
         { label: "Stream events", value: String(chunks.entries.length) },
+        ...(ttft === undefined || ttft < 0 ? [] : [{ label: "TTFT", value: `${ttft} ms` }]),
+    ]);
+}
+
+function assistantAttemptRow(entry: StoredSessionEvent, stepStart: StoredSessionEvent | undefined): ProjectedTraceRow {
+    const data = recordData(entry);
+    const chunks = expandAssistantStream(data?.stream);
+    const group = timedChunkGroup(chunks);
+    const location = turnStep(data);
+    const reason = group.finishReason;
+    const failed = reason === "error";
+    const text = [group.reasoning, group.text].filter(Boolean).join("\n");
+    const startTime = chunks[0]?.time ?? entry.event.time;
+    const ttft = stepStart && group.firstTokenTime !== undefined
+        ? group.firstTokenTime - stepStart.event.time : undefined;
+    return projectedRow({
+        id: `attempt:${entry.event.seq}`,
+        seq: entry.event.seq,
+        eventType: "assistant/attempt",
+        category: "assistant",
+        summary: oneLine(`Assistant attempt${reason ? ` · ${reason}` : ""}${text ? ` · ${text}` : ""}`, 500),
+        time: startTime,
+        ...(entry.event.time >= startTime ? { durationMs: entry.event.time - startTime } : {}),
+        ...location,
+        depth: 0,
+        groupId: eventGroup(location.turn, location.step, `attempt:${entry.event.seq}`),
+        ...(failed ? { error: group.error ?? "Assistant attempt failed" } : {}),
+        ...(group.usage ? { tokens: group.usage } : {}),
+    }, { event: entry.event }, [entry.event.data, text, reason], [
+        { label: "Stream events", value: String(chunks.length) },
+        ...(reason ? [{ label: "Finish reason", value: reason }] : []),
+        ...(ttft === undefined || ttft < 0 ? [] : [{ label: "TTFT", value: `${ttft} ms` }]),
+    ]);
+}
+
+function liveAssistantRow(snapshot: SessionStateSnapshot, stepStart: StoredSessionEvent | undefined): ProjectedTraceRow | undefined {
+    const live = snapshot.assistantStream;
+    if (!live || live.chunks.length === 0) return undefined;
+    const group = timedChunkGroup(live.chunks);
+    const first = live.chunks[0];
+    const last = live.chunks.at(-1)!;
+    const ttft = stepStart && group.firstTokenTime !== undefined
+        ? group.firstTokenTime - stepStart.event.time : undefined;
+    return projectedRow({
+        id: `assistant-live:${live.attemptId}`,
+        // Ordering anchor only: transient rows never enter seqToRowId or the event store.
+        seq: live.startedAfterSeq + 0.5,
+        eventType: "assistant/stream",
+        category: "assistant",
+        summary: oneLine(group.text || group.reasoning || `${live.chunks.length} stream chunks`, 500),
+        time: first.time,
+        ...(last.time >= first.time ? { durationMs: last.time - first.time } : {}),
+        turn: live.turn,
+        step: live.step,
+        depth: 0,
+        groupId: eventGroup(live.turn, live.step, "assistant"),
+        ...(group.usage ? { tokens: group.usage } : {}),
+    }, { attemptId: live.attemptId, stream: live.chunks }, [group.text, group.reasoning], [
+        { label: "Stream events", value: String(live.chunks.length) },
         ...(ttft === undefined || ttft < 0 ? [] : [{ label: "TTFT", value: `${ttft} ms` }]),
     ]);
 }
@@ -695,8 +766,8 @@ function subtoolRow(
         seq: anchor.event.seq,
         ...(settle === undefined ? {} : { endSeq: settle.event.seq }),
         eventType: settle === undefined
-            ? "tool/code-dispatch-start"
-            : "tool/code-dispatch-start → tool/code-dispatch",
+            ? anchor.event.type
+            : `${start?.event.type ?? "tool/ptc-dispatch-start"} → ${settle.event.type}`,
         category: "subtool",
         summary: oneLine([name, result].filter(Boolean).join(" · "), 500),
         time: anchor.event.time,
@@ -775,9 +846,9 @@ export function projectSessionTrace(snapshot: SessionStateSnapshot): TraceProjec
         } else if (entry.event.type === "tool/result") {
             const callId = toolResultFacts(entry).callId;
             if (callId) results.set(callId, [...(results.get(callId) ?? []), entry]);
-        } else if (entry.event.type === "tool/code-dispatch-start" && nonEmptyString(data?.subCallId)) {
+        } else if ((entry.event.type === "tool/ptc-dispatch-start" || entry.event.type === "tool/code-dispatch-start") && nonEmptyString(data?.subCallId)) {
             if (!subStarts.has(data.subCallId)) subStarts.set(data.subCallId, entry);
-        } else if (entry.event.type === "tool/code-dispatch" && nonEmptyString(data?.subCallId)) {
+        } else if ((entry.event.type === "tool/ptc-dispatch" || entry.event.type === "tool/code-dispatch") && nonEmptyString(data?.subCallId)) {
             if (!subSettles.has(data.subCallId)) subSettles.set(data.subCallId, entry);
         }
     }
@@ -828,7 +899,7 @@ export function projectSessionTrace(snapshot: SessionStateSnapshot): TraceProjec
                 }
             }
         }
-        if (entry.event.type === "tool/code-dispatch") {
+        if (entry.event.type === "tool/ptc-dispatch" || entry.event.type === "tool/code-dispatch") {
             const callId = recordData(entry)?.subCallId;
             if (typeof callId === "string") {
                 if (subStarts.has(callId)) continue;
@@ -861,7 +932,7 @@ export function projectSessionTrace(snapshot: SessionStateSnapshot): TraceProjec
                 continue;
             }
         }
-        if (entry.event.type === "tool/code-dispatch-start") {
+        if (entry.event.type === "tool/ptc-dispatch-start" || entry.event.type === "tool/code-dispatch-start") {
             const callId = recordData(entry)?.subCallId;
             const settle = typeof callId === "string" ? subSettles.get(callId) : undefined;
             const data = recordData(entry);
@@ -878,11 +949,20 @@ export function projectSessionTrace(snapshot: SessionStateSnapshot): TraceProjec
             }
         }
         if (entry.event.type === "assistant/message") {
-            const location = turnStep(recordData(entry));
+            const data = recordData(entry);
+            const location = turnStep(data);
             const key = stepKey(location.turn, location.step);
-            const group = key === undefined ? undefined : chunks.get(key);
+            const group = Array.isArray(data?.stream)
+                ? timedChunkGroup(expandAssistantStream(data.stream))
+                : key === undefined ? undefined : chunks.get(key);
             const row = assistantRow(entry, group, key === undefined ? undefined : stepStarts.get(key));
             mapRow(row, [entry, ...(group?.entries ?? [])]);
+            continue;
+        }
+        if (entry.event.type === "assistant/attempt") {
+            const location = turnStep(recordData(entry));
+            const key = stepKey(location.turn, location.step);
+            mapRow(assistantAttemptRow(entry, key === undefined ? undefined : stepStarts.get(key)), [entry]);
             continue;
         }
         mapRow(
@@ -916,6 +996,10 @@ export function projectSessionTrace(snapshot: SessionStateSnapshot): TraceProjec
         if (row) mapRow(row, [settle]);
     }
 
+    const live = snapshot.assistantStream;
+    const liveKey = live ? stepKey(live.turn, live.step) : undefined;
+    const liveRow = liveAssistantRow(snapshot, liveKey === undefined ? undefined : stepStarts.get(liveKey));
+    if (liveRow) rows.push(liveRow);
     rows.sort((left, right) => left.seq - right.seq || left.id.localeCompare(right.id));
     return {
         rows,

@@ -47,7 +47,7 @@
     "config.npxTimeoutMs.description": "等待 npx 或 pnpm 下载 DSH 包并启动 Web 服务的最长时间。如果检测到类似包管理器下载失败的错误，会再使用另一个 registry 尝试一次。",
     "config.npmRegistry.description": "npx 或 pnpm 下载/启动失败后备用尝试一次时使用的 npm 兼容 registry。默认是 npmmirror；如果当前包管理器已经使用它，则改试官方源。留空可禁用备用尝试。",
     "config.enableCompaction.description": "扩展自行启动 DSH Web server 时启用官方 /compact command。",
-    "config.serverUrl.description": "已运行且受信任的 dsh web Runtime 的可选 HTTP(S) URL。设置后扩展会连接该地址，而不是启动 dsh.command。回环地址允许使用 HTTP；远程 Runtime 必须使用 HTTPS。对于 dsh 0.1.2-rc.1 及更新版本，请在 URL 中填写启动 Token，或单独设置 dsh.serverToken。",
+    "config.serverUrl.description": "已运行且受信任的 dsh web 0.1.5-rc.1 Runtime 的可选 HTTP(S) URL。设置后扩展会连接该地址，而不是启动 dsh.command。回环地址允许使用 HTTP；远程 Runtime 必须使用 HTTPS。请在 URL 中填写启动 Token，或单独设置 dsh.serverToken。",
     "config.serverToken.description": "dsh.serverUrl 对应的可选 dsh web 启动 Token。当 Runtime 地址与 Token 分开配置时填写；扩展会用它换取认证会话，不会将它作为 Authorization 请求头发送。",
     "config.serverPort.description": "当 dsh.serverUrl 为空且 dsh.commandArgs 未指定端口时传给 dsh web 的端口。设为 0 表示自动选择空闲端口。",
     "config.autoStart.description": "扩展激活时自动启动或连接 dsh web。关闭后可点击状态标签，或执行“DSH：启动 dsh Web Runtime”。",

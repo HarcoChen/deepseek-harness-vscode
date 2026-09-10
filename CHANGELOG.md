@@ -9,6 +9,15 @@
 
 <!-- 在这里填写下一版本的发布说明；npm run release 会自动提升这一节。 -->
 
+### Runtime 兼容性
+
+- 适配 `dsh 0.1.5-rc.1`（契约 pin `183f08e9c6dde7e36cd2318eaee70b0da08fb35e`），包管理器启动和托管下载的默认版本同步提升。手动管理的 Runtime 也需升级；V3 会话迁移保留旧文件，但新日志不支持降级读取。
+- 历史读取支持 V3 surface 范围、`system/message` 及内嵌压缩 Assistant stream；实时回答显式订阅 `assistantStream`，独立校验 revision/index 并在持久化结算或重连时清除临时内容。翻页保留固定日志截止点和连接代隔离。
+- Trace 展示独立失败/重试 attempt、压缩流的 Token/首 Token 时间以及新版 PTC 工具事件；聊天保留压缩前已展示的原始对话。
+- 命令改用 `submittedAttachments`，子代理跟进修正 `request` 包装并显式指定排队投递；Goal 支持恢复处于 active 但未激活的目标。
+- 模型列表直接采用 Runtime catalog，移除 `expires-on-0910` 临时模型注入，使用上游提供的 DeepSeek V41 Flash 路由与能力描述。
+- 本次检查时 CNB 的 `0.1.5-rc.1` 独立 Runtime 镜像尚未发布（404）；官方 npm 启动路径可用。镜像发布前应使用 pnpm/npx 或已有 Runtime。
+
 ## [0.9.1] - 2026-09-08
 
 ### 修复

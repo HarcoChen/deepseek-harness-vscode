@@ -107,7 +107,9 @@ The bottom bar shows your current balance, including peak and off-peak pricing. 
 
 **Do I need to install DSH manually?** Usually no. The extension looks for a usable local environment and attempts to download a managed Runtime when needed. The first download requires network access; `dsh.installWhenMissing` controls automatic installation.
 
-**Can I connect to an existing Runtime?** Yes. Set `dsh.serverUrl` to your running `dsh web` address and set `dsh.serverToken` to its launch token when the token is not already in the URL. The extension supports the RC Remote RPC introduced in `dsh 0.1.2-rc.1`; the default managed Runtime is `0.1.2-rc.1`. `0.1.1-rc.2` and earlier are not supported — their protocol is incompatible, and connecting to one reports a missing RC Remote endpoint with an upgrade hint. Newer versions are untested rather than blocked: the extension does not detect a Runtime above the verified range, so upgrade `dsh.runtimeVersion` only after checking the release for protocol changes.
+**Can I connect to an existing Runtime?** Yes. Set `dsh.serverUrl` to your running `dsh web` address and set `dsh.serverToken` to its launch token when the token is not already in the URL. This extension targets `dsh 0.1.5-rc.1`, including its V3 history and opt-in Assistant stream. Upgrade manually managed instances too: older RC releases do not provide the required stream contract. Newer releases require another contract audit. Session migration preserves original logs, but older runtimes cannot read the upgraded V3 files.
+
+The default package-manager launch is pinned to `0.1.5-rc.1`, available on official npm. As of the adaptation check, the CNB standalone Runtime mirror returns 404 for this version. Use the default pnpm/npx launch or connect an existing `0.1.5-rc.1` instance until that mirror is published; a standalone download is not currently verified.
 
 **Does DSH support multi-root workspaces?** DSH supports multiple independent Workspaces, but each Session has one working directory (`cwd`). A VS Code multi-root workspace is therefore represented by the first workspace folder for Runtime startup; use separate DSH Workspaces or Sessions when roots need different working directories.
 
@@ -141,7 +143,7 @@ Search `dsh` in VS Code settings for the full list.
 | `dsh.serverToken` | `""` | Launch token for `dsh.serverUrl`; use it when the address and token are configured separately. |
 | `dsh.autoStart` | `true` | Automatically start or connect to dsh web when the extension activates. |
 | `dsh.installWhenMissing` | `true` | Automatically download and manage a standalone Runtime when no usable npm/dsh environment is available. |
-| `dsh.runtimeVersion` | `0.1.2-rc.1` | Version to download for the managed Runtime. |
+| `dsh.runtimeVersion` | `0.1.5-rc.1` | Version to download for the managed Runtime (requires that version on the CNB mirror). |
 | `dsh.npmRegistry` | `https://registry.npmmirror.com` | Registry mirror used as a download fallback. |
 | `dsh.npxTimeoutMs` | `120000` | Timeout while waiting for package-manager download and startup. |
 | `dsh.maxContextBytes` | `120000` | Maximum UTF-8 bytes of `<ide_context>` included per prompt. |
@@ -205,6 +207,15 @@ npm run compile    # Build to dist/
 npm run package    # Compile + vsce package
 npm run release    # Test + version bump + CHANGELOG archive + tag
 ```
+
+To check the Remote integration against an installed `0.1.5-rc.1` launcher:
+
+```bash
+npm run compile
+node scripts/verify-remote-runtime.mjs --launcher /absolute/path/to/dsh
+```
+
+This smoke run uses a temporary DSH home/workspace and a loopback model stub. It does not use your sessions or external model credentials. The runner requires Node.js with `node:zlib` Zstandard support.
 
 To verify the managed Runtime release logic:
 

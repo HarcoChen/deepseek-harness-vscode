@@ -8,6 +8,8 @@ import {
     type RemoteSessionAddress,
 } from "./sessionState";
 import { workspaceBaseline, workspaceView } from "./workspaceState";
+import { RemoteAssistantStream } from "../assistantStream";
+import { RUNTIME_DEFAULT_VERSION } from "../managedRuntime/types";
 import { HarnessCatalogStore } from "../sessionCatalog";
 import { HarnessSessionStore, type SessionStateSnapshot } from "../sessionStore";
 import type {
@@ -64,6 +66,7 @@ export class RemoteStateCoordinator implements AsyncDisposable {
     public readonly catalog: HarnessCatalogStore;
     private readonly historyPageSize: number;
     private readonly syncing = new Map<string, Promise<void>>();
+    private readonly historyAborts = new Set<AbortController>();
     private readonly connection: RemoteConnectionController;
     private readonly unary: RemoteUnaryClient;
     private readonly sinks: RemoteStateCoordinatorSinks;
@@ -88,7 +91,7 @@ export class RemoteStateCoordinator implements AsyncDisposable {
         this.connection = connection;
         this.unary = connection.unary;
         this.historyPageSize = Math.max(1, options.historyPageSize ?? 100);
-        this.runtimeVersion = options.runtimeVersion ?? "0.1.2-rc.1";
+        this.runtimeVersion = options.runtimeVersion ?? RUNTIME_DEFAULT_VERSION;
         this.catalog = new HarnessCatalogStore();
         this.sessions = new HarnessSessionStore((diagnostic) =>
             sinks.onDiagnostic?.(diagnostic.message, diagnostic.value),
@@ -112,6 +115,9 @@ export class RemoteStateCoordinator implements AsyncDisposable {
         connection.onEvent((frame) => this.onRemoteEvent(frame));
         connection.onStateChange((state) => {
             if (state === "reconnecting" || state === "stopped") {
+                this.generationAbort?.abort();
+                this.generationReady = false;
+                this.sessions.clearRemoteAssistantStreams();
                 this.sessions.markRemoteInteractionsUnavailable();
             }
             this.sinks.onConnectionState?.(state);
@@ -126,6 +132,7 @@ export class RemoteStateCoordinator implements AsyncDisposable {
     public async stop(): Promise<void> {
         this.stopped = true;
         this.generationAbort?.abort();
+        for (const abort of this.historyAborts) abort.abort();
         await this.connection.stop();
         await Promise.allSettled(this.syncing.values());
     }
@@ -180,6 +187,20 @@ export class RemoteStateCoordinator implements AsyncDisposable {
 
     private async readCompleteHistory(sessionId: string): Promise<void> {
         const openingAbort = new AbortController();
+        const historyAbort = new AbortController();
+        this.historyAborts.add(historyAbort);
+        try {
+            await this.readHistoryWindow(sessionId, historyAbort.signal, openingAbort);
+        } finally {
+            openingAbort.abort();
+            this.historyAborts.delete(historyAbort);
+        }
+    }
+
+    private async readHistoryWindow(sessionId: string, lifetime: AbortSignal, openingAbort: AbortController): Promise<void> {
+        let generation = this.connection.currentGeneration;
+        let signal = AbortSignal.any([lifetime, ...(this.generationAbort ? [this.generationAbort.signal] : [])]);
+        const openingSignal = AbortSignal.any([openingAbort.signal, signal]);
         let tail: ParsedSessionSnapshot | undefined;
         try {
             for await (const value of this.connection.open("session/follow", {
@@ -187,8 +208,12 @@ export class RemoteStateCoordinator implements AsyncDisposable {
                     address: { kind: "session", sessionId },
                     maxMessages: this.historyPageSize,
                 },
-            }, openingAbort.signal)) {
+            }, openingSignal)) {
                 tail = parseSessionSnapshot(sessionId, value);
+                // A caller may request history before the first connection is ready.
+                // Capture the generation that actually supplied the opening frame.
+                generation = this.connection.currentGeneration;
+                signal = AbortSignal.any([lifetime, ...(this.generationAbort ? [this.generationAbort.signal] : [])]);
                 break;
             }
         } finally {
@@ -209,7 +234,7 @@ export class RemoteStateCoordinator implements AsyncDisposable {
                     beforeSeq,
                     maxMessages: this.historyPageSize,
                 },
-            }));
+            }, signal));
             validateHistoryPage(page, beforeSeq, sessionId);
             pages.push(page.events);
             const next = lowestSeq(page.events);
@@ -219,6 +244,7 @@ export class RemoteStateCoordinator implements AsyncDisposable {
             beforeSeq = next;
             hasMore = page.hasMore === true;
         }
+        if (signal.aborted || this.stopped || generation !== this.connection.currentGeneration) return;
         this.catalog.applyProjectionBaseline(sessionId, tail.projections);
         this.sessions.replaceRemoteBaseline(sessionId, {
             events: pages.flat(),
@@ -346,14 +372,39 @@ export class RemoteStateCoordinator implements AsyncDisposable {
 
     private async consumeSession(address: RemoteSessionAddress, signal: AbortSignal): Promise<void> {
         const sessionId = address.kind === "session" ? address.sessionId : address.childSessionId;
+        const assistant = new RemoteAssistantStream();
+        let cursor: number | undefined;
         try {
             for await (const value of this.connection.open("session/follow", {
                 request: {
                     address,
                     maxMessages: this.historyPageSize,
+                    assistantStream: true,
                 },
             }, signal)) {
                 if (signal.aborted) return;
+                if (isRecord(value) && value.type === "snapshot") {
+                    if (cursor !== undefined) throw new Error("Remote session repeated its opening snapshot");
+                    const snapshot = parseSessionSnapshot(sessionId, value);
+                    cursor = snapshot.cursor;
+                    assistant.replace(value.assistantStream, cursor);
+                    this.sessions.applyRemoteAssistantStream(sessionId, assistant.snapshot);
+                } else {
+                    if (cursor === undefined) throw new Error("Remote session follow omitted its opening snapshot");
+                    if (isRecord(value) && value.type === "assistant-stream") {
+                        assistant.acceptFrame(value.frame, cursor);
+                        this.sessions.applyRemoteAssistantStream(sessionId, assistant.snapshot);
+                        continue;
+                    }
+                    const event = isRecord(value) && value.type === "event"
+                        ? remoteHistoryEntries([value])[0]?.event : undefined;
+                    if (!event || typeof event.seq !== "number") throw new Error("Remote session event frame is malformed");
+                    if (event.seq <= cursor) continue;
+                    if (event.seq !== cursor + 1) throw new Error(`Remote session skipped sequence ${cursor + 1}`);
+                    cursor = event.seq;
+                    assistant.acceptEvent(event as import("../types").DshSessionEvent);
+                    this.sessions.applyRemoteAssistantStream(sessionId, assistant.snapshot);
+                }
                 this.applySession(sessionId, value);
             }
             if (!signal.aborted) throw new Error(`Remote session stream for ${sessionId} ended unexpectedly`);
@@ -373,7 +424,8 @@ export class RemoteStateCoordinator implements AsyncDisposable {
         if (this.followedAddresses.has(key)) return;
         this.followedAddresses.add(key);
         void this.consumeSession(address, signal).finally(() => {
-            this.followedAddresses.delete(key);
+            // An old follow can finish after the next generation already opened this address.
+            if (this.generationAbort?.signal === signal) this.followedAddresses.delete(key);
         }).catch((error) => {
             if (!signal.aborted && !this.stopped) {
                 this.diagnostic(`Remote session follow stopped for ${key}`, error);
@@ -399,11 +451,16 @@ export class RemoteStateCoordinator implements AsyncDisposable {
         }
         if (typeof value.sessionId !== "string") throw new Error("Remote session control frame has no sessionId");
         if (value.type === "queue" && Array.isArray(value.items)) {
+            if (this.controlBaseline) this.controlBaseline.queues[value.sessionId] = value.items;
             this.sessions.applyRemoteQueue(value.sessionId, value.items);
         } else if (value.type === "jobs" && Array.isArray(value.jobs)) {
+            if (this.controlBaseline) this.controlBaseline.jobs[value.sessionId] = value.jobs;
             this.sessions.applyRemoteJobs(value.sessionId, value.jobs);
         } else if (value.type === "projection" && typeof value.key === "string" && typeof value.seq === "number") {
             this.sessions.applyRemoteProjection(value.sessionId, value.key, value.value, value.seq);
+            if (value.key === "title" && typeof value.value === "string") {
+                this.catalog.applyRename(value.sessionId, value.value, value.seq);
+            }
         } else {
             throw new Error(`Remote session control frame ${value.type} is malformed`);
         }
@@ -418,6 +475,7 @@ export class RemoteStateCoordinator implements AsyncDisposable {
             const jobs = Array.isArray(baseline.jobs[sessionId]) ? baseline.jobs[sessionId] as unknown[] : [];
             const projection = toProjection(baseline.projections[sessionId]);
             this.sessions.applyRemoteControl(sessionId, queue, jobs, projection);
+            this.catalog.applyProjectionBaseline(sessionId, projection);
         }
     }
 

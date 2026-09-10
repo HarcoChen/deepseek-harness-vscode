@@ -1,5 +1,7 @@
 # DSH `0.1.2-rc.1` Remote RPC 适配方案
 
+> 历史方案：以下章节记录首次 RC Remote 迁移。当前适配目标已升级至 `0.1.5-rc.1`，增量审计、实现及验证见 [RPC_0.1.5_ADAPTATION.md](./RPC_0.1.5_ADAPTATION.md)。旧版本号不再代表当前默认值。
+
 ## 1. 目标与结论
 
 本方案以 [`RPC_new.md`](./RPC_new.md) 的审计结果和 `deepseek-harness` 的 `dsh-v0.1.2-rc.1` 源码为依据，目标是让 dsh-ide 完整支持默认托管 Runtime `0.1.2-rc.1`，而不是只修复根路径 token/cookie 鉴权。

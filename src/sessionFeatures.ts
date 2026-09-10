@@ -5,6 +5,7 @@ import {
     GoalHudView,
     DshGoalProjection,
     DshGoalRef,
+    DshGoalActivation,
     DshHistoryResult,
     DshJobView,
     DshQuestionItem,
@@ -284,6 +285,7 @@ export class GoalMutationGate {
 export function presentGoalHud(
     cell: ProjectionCell | undefined,
     action: GoalMutationSnapshot,
+    activation?: DshGoalActivation,
 ): GoalHudView | undefined {
     if (!cell || cell.key !== "goal") return undefined;
     const parsed = parseGoalProjection(cell.value);
@@ -306,6 +308,7 @@ export function presentGoalHud(
     return {
         state: "present",
         goal: { ...parsed.value.goal },
+        ...(activation === undefined ? {} : { activation }),
         roundsStarted: parsed.value.roundsStarted,
         createdAt: parsed.value.createdAt,
         updatedAt: parsed.value.updatedAt,

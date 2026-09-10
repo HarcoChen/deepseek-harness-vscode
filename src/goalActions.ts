@@ -1,4 +1,4 @@
-import type { DshGoalPhase } from "./types";
+import type { DshGoalActivation, DshGoalPhase } from "./types";
 
 /** Goal mutations shared by host validation and UI adapters. */
 export type GoalAction = "create" | "pause" | "resume" | "complete" | "edit" | "clear";
@@ -38,8 +38,10 @@ export function goalActionAllowed(
     action: GoalAction,
     roundsStarted?: number,
     maxGoalRounds?: number,
+    activation?: DshGoalActivation,
 ): boolean {
-    if (!GOAL_ACTIONS_BY_PHASE[phase].includes(action)) return false;
+    if (!(phase === "active" && action === "resume" && activation === "disarmed") &&
+        !GOAL_ACTIONS_BY_PHASE[phase].includes(action)) return false;
     if (action !== "resume") return true;
     return (
         typeof roundsStarted === "number" &&
