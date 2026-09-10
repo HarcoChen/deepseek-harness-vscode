@@ -471,7 +471,7 @@
             "properties": {
                 "dsh.command": {
                     "type": "string",
-                    "default": "pnpm",
+                    "default": "auto",
                     "description": "%config.command.description%"
                 },
                 "dsh.commandArgs": {
@@ -480,8 +480,6 @@
                         "type": "string"
                     },
                     "default": [
-                        "dlx",
-                        "@deepseek-ai/dsh",
                         "web",
                         "--no-open"
                     ],
@@ -534,7 +532,7 @@
                 },
                 "dsh.runtimeVersion": {
                     "type": "string",
-                    "default": "0.1.2-rc.1",
+                    "default": "0.1.5-rc.1",
                     "pattern": "^[0-9A-Za-z.-]+$",
                     "description": "%config.runtimeVersion.description%"
                 },

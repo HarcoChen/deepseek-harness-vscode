@@ -313,6 +313,7 @@ const ZH_CN: Readonly<Record<string, string>> = {
     "Edit": "编辑",
     "Pause": "暂停",
     "Resume": "继续",
+    "Waiting for resume": "等待继续",
     "Complete": "完成",
     "New Goal": "新 Goal",
     "Clear": "清除",

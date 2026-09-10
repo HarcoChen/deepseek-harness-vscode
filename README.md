@@ -107,7 +107,13 @@ The bottom bar shows your current balance, including peak and off-peak pricing. 
 
 **Do I need to install DSH manually?** Usually no. The extension looks for a usable local environment and attempts to download a managed Runtime when needed. The first download requires network access; `dsh.installWhenMissing` controls automatic installation.
 
-**Can I connect to an existing Runtime?** Yes. Set `dsh.serverUrl` to your running `dsh web` address and set `dsh.serverToken` to its launch token when the token is not already in the URL. The extension supports the RC Remote RPC introduced in `dsh 0.1.2-rc.1`; the default managed Runtime is `0.1.2-rc.1`. `0.1.1-rc.2` and earlier are not supported — their protocol is incompatible, and connecting to one reports a missing RC Remote endpoint with an upgrade hint. Newer versions are untested rather than blocked: the extension does not detect a Runtime above the verified range, so upgrade `dsh.runtimeVersion` only after checking the release for protocol changes.
+**Can I connect to an existing Runtime?** Yes. Set `dsh.serverUrl` to your running `dsh web` address and set `dsh.serverToken` to its launch token when the token is not already in the URL. This extension targets `dsh 0.1.5-rc.1`, including its V3 history and opt-in Assistant stream. Upgrade manually managed instances too: older RC releases do not provide the required stream contract. Newer releases require another contract audit. Session migration preserves original logs, but older runtimes cannot read the upgraded V3 files.
+
+The default `dsh.command: "auto"` probes `dsh --version` on PATH, then in the npm global prefix. A compatible local CLI is used directly; missing, unknown or incompatible versions fall back to pnpm/npx pinned to `0.1.5-rc.1`, then the managed Runtime. Currently only that exact version is accepted, not arbitrary newer releases. Discovery does not upgrade or overwrite a global installation. Explicit executable paths remain authoritative and fail on incompatible versions; explicit pnpm/npx retains package-manager startup. If you previously saved `dsh.command: "pnpm"`, reset it or select `auto` to enable local-first discovery.
+
+Default app arguments are `web --no-open`; pnpm/npx gets its required prefix automatically when no argument override is saved. Existing package-manager argument overrides are preserved, and auto mode strips their package prefix when selecting a local CLI. Shared Runtime discovery and lock migration still run before choosing a new launcher, so fallback cannot bypass an occupied lock.
+
+As of the adaptation check, the CNB standalone Runtime mirror returns 404 for `0.1.5-rc.1`. Use a compatible local CLI, the pinned pnpm/npx fallback, or an existing instance until that mirror is published; a standalone download is not currently verified. After compilation, `node scripts/verify-runtime-discovery.mjs` checks selection and actual startup arguments in an isolated POSIX CLI environment without downloads or model requests.
 
 **Does DSH support multi-root workspaces?** DSH supports multiple independent Workspaces, but each Session has one working directory (`cwd`). A VS Code multi-root workspace is therefore represented by the first workspace folder for Runtime startup; use separate DSH Workspaces or Sessions when roots need different working directories.
 
@@ -122,6 +128,18 @@ The bottom bar shows your current balance, including peak and off-peak pricing. 
 The extension connects to the Runtime through RC Remote RPC, using HTTP calls and a multiplexed WebSocket for live session updates.
 
 Multiple VS Code windows preferentially reuse the same local Harness Runtime. The Runtime launched by the extension publishes a random loopback port through a process lock; later windows connect directly, avoiding competing writes.
+
+The shared file remains `dsh-runtime.lock` in the OS temporary directory. Its contents include `runtimeVersion`, owner `pid` / `ownerId` / `createdAt`, launcher `runtimePid` / `runtimeProcess`, the owned POSIX `runtimeProcessGroup`, and connection addresses. The version comes from an exact npm package spec, the managed version, or the local launcher's `--version`, never an assumed default for an unknown binary. Automatic reuse requires an exact match to this extension's target. Unversioned or mismatched live instances enter the migration flow below; automatic port discovery without a versioned lock is rejected. Explicit `dsh.serverUrl` connections remain the operator's responsibility for version compatibility.
+
+Lock cleanup rules:
+
+- Normal deactivation returns an awaited shutdown promise. Stop/dispose are idempotent and cancel startup; shutdown stops the owned process tree before releasing its lock. POSIX launches use a separate process group (TERM, then bounded KILL if needed); Windows uses scoped `taskkill /T` while the owned root is still identifiable. Cleanup checks the owner ID, file identity, and contents; a replacement owned by another instance is preserved. Forced editor termination can still leave a stale lock.
+- Automatic reclamation requires the recorded editor and any recorded launcher/process group to have exited. Previously advertised numeric loopback ports must explicitly refuse TCP connections. This also migrates unversioned legacy locks with a dead editor and closed port; missing version metadata alone no longer blocks upgrades. HTTP errors, access-denied errors, and timeouts do not prove exit.
+- A still-running orphan with a verified DSH npm entrypoint offers **Stop old Runtime and upgrade**. Only explicit confirmation permits SIGTERM, after rechecking the lock, editor owner, listener PID, birth time, and command. This interrupts active work and can affect other connected editors; disk sessions are kept, but unsaved in-flight output may be lost. Cancellation keeps the process and lock. Use **Restart dsh Web Runtime** to retry after stopping the old instance.
+- A live owner, unidentified process, ambiguous endpoint, or malformed/partial lock is retained for manual inspection. A legacy wrapper without an address remains uncertain. New owned process groups can be proved stopped even before URL publication, allowing safe retry after package-download failures; if termination cannot be proved (including a previously exited Windows wrapper), the lock is retained.
+- A short-lived `dsh-runtime.lock.mutation` mutex serializes creation, publication, and removal across updated editors. If a process crashes during mutation, the guard is not automatically removed: the diagnostic gives its path for manual cleanup after verifying its owner exited. Never manually remove a lock while its Runtime is running.
+
+After `npm run compile`, run `node scripts/verify-runtime-lock.mjs`, `node scripts/verify-runtime-migration.mjs`, and `node scripts/verify-runtime-shutdown.mjs` to check locks, upgrade confirmation, and shutdown using isolated temporary directories, child processes, and loopback listeners.
 
 ```mermaid
 graph TD
@@ -141,7 +159,7 @@ Search `dsh` in VS Code settings for the full list.
 | `dsh.serverToken` | `""` | Launch token for `dsh.serverUrl`; use it when the address and token are configured separately. |
 | `dsh.autoStart` | `true` | Automatically start or connect to dsh web when the extension activates. |
 | `dsh.installWhenMissing` | `true` | Automatically download and manage a standalone Runtime when no usable npm/dsh environment is available. |
-| `dsh.runtimeVersion` | `0.1.2-rc.1` | Version to download for the managed Runtime. |
+| `dsh.runtimeVersion` | `0.1.5-rc.1` | Version to download for the managed Runtime (requires that version on the CNB mirror). |
 | `dsh.npmRegistry` | `https://registry.npmmirror.com` | Registry mirror used as a download fallback. |
 | `dsh.npxTimeoutMs` | `120000` | Timeout while waiting for package-manager download and startup. |
 | `dsh.maxContextBytes` | `120000` | Maximum UTF-8 bytes of `<ide_context>` included per prompt. |
@@ -205,6 +223,15 @@ npm run compile    # Build to dist/
 npm run package    # Compile + vsce package
 npm run release    # Test + version bump + CHANGELOG archive + tag
 ```
+
+To check the Remote integration against an installed `0.1.5-rc.1` launcher:
+
+```bash
+npm run compile
+node scripts/verify-remote-runtime.mjs --launcher /absolute/path/to/dsh
+```
+
+This smoke run uses a temporary DSH home/workspace and a loopback model stub. It does not use your sessions or external model credentials. The runner requires Node.js >=22.15.0 with `node:zlib` Zstandard support (`zstdCompressSync`; Node 23 users need >=23.8.0).
 
 To verify the managed Runtime release logic:
 

@@ -21,6 +21,7 @@ const FORWARDED_EMIT_EVENTS = new Set([
     "api-session/status",
     "commands/change",
     "credentials/reference-updated",
+    "goal/activation-changed",
     "cordis/request-run",
     "cordis/request-run-resolved",
     "cordis/dynamic-package",

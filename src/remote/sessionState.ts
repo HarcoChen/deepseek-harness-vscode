@@ -4,6 +4,7 @@ import type {
     DshSessionProjectionsBlock,
 } from "../types";
 import { isRemoteJsonValue } from "./contracts";
+import { expandAssistantStream } from "../assistantStream";
 
 /** Address shared by ordinary and subagent Session Remote methods. */
 export type RemoteSessionAddress =
@@ -60,6 +61,14 @@ function decodeSessionEvent(value: unknown): DshSessionEvent {
         (value.surfaceOp !== undefined && !validSurfaceOp(value.surfaceOp))
     ) {
         throw new Error("Remote history event has an invalid envelope");
+    }
+    if ((value.type === "assistant/message" || value.type === "assistant/attempt") &&
+        isPlainRecord(value.data) && Object.hasOwn(value.data, "stream")) {
+        expandAssistantStream(value.data.stream);
+    }
+    // Keep the editor's domain range vocabulary stable at this wire boundary.
+    if (isPlainRecord(value.surfaceOp) && Object.hasOwn(value.surfaceOp, "startSeq")) {
+        return { ...value, surfaceOp: { op: "replace", start: value.surfaceOp.startSeq, end: value.surfaceOp.endSeq } } as DshSessionEvent;
     }
     return value as unknown as DshSessionEvent;
 }
@@ -175,12 +184,12 @@ function hasOnlyKeys(value: object, keys: readonly string[]): boolean {
 
 function validSurfaceOp(value: unknown): boolean {
     if (value === "append") return true;
-    return isPlainRecord(value) &&
-        hasExactKeys(value, ["op", "start", "end"]) &&
-        value.op === "replace" &&
-        isSafeNonNegativeSeq(value.start) &&
-        isSafeNonNegativeSeq(value.end) &&
-        value.start <= value.end;
+    if (!isPlainRecord(value) || value.op !== "replace") return false;
+    const current = hasExactKeys(value, ["op", "startSeq", "endSeq"]);
+    const legacy = hasExactKeys(value, ["op", "start", "end"]);
+    const start = current ? value.startSeq : value.start;
+    const end = current ? value.endSeq : value.end;
+    return (current || legacy) && isSafeNonNegativeSeq(start) && isSafeNonNegativeSeq(end) && start <= end;
 }
 
 function isPlainRecord(value: unknown): value is Record<string, any> {

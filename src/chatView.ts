@@ -28,6 +28,7 @@ import { ToolDiffStore } from "./toolDiffStore";
 import { manageWorkspaces } from "./workspaceActions";
 import { DshRuntime } from "./dshRuntime";
 import { goalActionAllowed, goalOperationFor } from "./goalActions";
+import { GoalActivationController } from "./goalActivation";
 import { isImageMediaType, isRecord } from "./guards";
 import { manageProviders as runProviderManagement } from "./providerManagement";
 import {
@@ -260,6 +261,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private readonly optimisticPrompts: OptimisticPrompt[] = [];
     private readonly markdownRenders = new MarkdownRenderCache();
     private readonly goalMutations = new GoalMutationGate();
+    private readonly goalActivation: GoalActivationController;
     private readonly subagents: SubagentController;
     private sessionId: string | undefined;
     private sessionCwd: string | undefined;
@@ -324,6 +326,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         private readonly agentStatusPresentations?: AgentStatusPresentationRegistry,
     ) {
         this.changeReviews = new ChangeReviewStore(output);
+        this.goalActivation = new GoalActivationController(
+            (sessionId) => runtime.getGoalActivation(sessionId),
+            () => this.schedulePostState(),
+        );
         this.toolDiffs = new ToolDiffStore(output);
         this.subagents = new SubagentController({
             runtime,
@@ -384,10 +390,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                 this.schedulePostState();
             }),
             agentStatusPresentations?.onDidChange(() => this.schedulePostState()) ?? new vscode.Disposable(() => {}),
-            runtime.onDidRemoteEvent((event) => {
-                // Forwarded RC events carry no diff. Invalidate the affected
-                // local cache and repull the visible session when possible.
+            runtime.onDidRemoteEvent((event, args) => {
+                // Apply live goal state; other events invalidate their affected caches.
                 switch (event) {
+                    case "goal/activation-changed":
+                        this.goalActivation.accept(args[0]);
+                        break;
                     case "commands/change":
                         this.commandCatalogs.invalidate();
                         if (this.sessionId) this.refreshCommandCatalog(this.sessionId);
@@ -419,6 +427,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                 }
             }),
             runtime.onDidHarnessConnect(() => {
+                this.goalActivation.reset();
                 this.commandRegistryUnavailable = false;
                 this.commandCatalogs.clear();
                 void this.refreshDynamicPlugins();
@@ -1091,6 +1100,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.viewMessageDisposable?.dispose();
         if (this.stateUpdateTimer) clearTimeout(this.stateUpdateTimer);
         this.subagents.dispose();
+        this.goalActivation.dispose();
         this.fileReferenceQueryAbort?.abort();
         this.changeReviews.dispose();
         this.toolDiffs.dispose();
@@ -2301,6 +2311,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                     operation,
                     parsed.value.roundsStarted,
                     parsed.value.goal.maxGoalRounds,
+                    this.goalActivation.activationFor(sessionId, ref),
                 )) {
                     if (operation === "resume" && parsed.value.roundsStarted >= parsed.value.goal.maxGoalRounds) {
                         throw new Error(t("Goal has reached its maximum rounds and cannot be resumed."));
@@ -2876,6 +2887,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         const sessionStats = sessionStatsProjection(projectionValue(session, "sessionStats"));
         const host = presentHostBaseline(this.runtime.getHostDescription());
         const busy = selected?.running === true;
+        const parsedGoal = goalCell ? parseGoalProjection(goalCell.value) : undefined;
+        const activeGoal = parsedGoal?.ok && parsedGoal.value?.goal.phase === "active"
+            ? parsedGoal.value.goal : undefined;
+        this.goalActivation.observe(this.sessionId, activeGoal, busy);
         const agentStatusLabel = this.agentStatusLabel(this.sessionId, busy);
         const autoOpenReasoning =
             vscode.workspace.getConfiguration("dsh").get<boolean>("autoOpenReasoning", true);
@@ -3025,7 +3040,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             ),
             queue: queueDockItems(session?.queue.items ?? []),
             goal: this.sessionId
-                ? presentGoalHud(goalCell, this.goalMutations.snapshot(this.sessionId))
+                ? presentGoalHud(
+                    goalCell,
+                    this.goalMutations.snapshot(this.sessionId),
+                    activeGoal ? this.goalActivation.activationFor(this.sessionId, activeGoal) : undefined,
+                )
                 : undefined,
             subagents: this.sessionId ? this.subagents.tree(this.sessionId) : undefined,
             subagentPreview: subagentPreview
