@@ -11,6 +11,10 @@ import { parseRemoteServerResponse, remoteEndpointUrl } from "./remote/contracts
 import { RemoteHttpError, RemoteProtocolError } from "./remote/errors";
 import { RemoteStateCoordinator } from "./remote/stateCoordinator";
 import { RemoteUnaryClient } from "./remote/unaryClient";
+import {
+    canReclaimRuntimeLock, exactRuntimeVersion, mutateRuntimeLock, readRuntimeLock, removeRuntimeLock,
+    runtimeHasExited, sameRuntimeLockFile, type RuntimeLockRecord,
+} from "./runtimeLock";
 import { historyEntries as remoteHistoryEntries, projectionBlock as remoteProjectionBlock } from "./remote/sessionState";
 import { t } from "./localize";
 import {
@@ -246,27 +250,17 @@ function applyRuntimeToken(endpoint: RuntimeEndpoint, token: unknown): RuntimeEn
 }
 
 /** One lock file's advertised Runtime endpoint, or undefined when it has none. */
-async function readLockRecord(path: string): Promise<RuntimeEndpoint | undefined> {
-    try {
-        const contents = await readFile(path, "utf8");
-        const record = JSON.parse(contents) as { url?: unknown; launchUrl?: unknown };
-        const advertised = parseRuntimeEndpoint(record.url, true);
-        const launch = parseRuntimeEndpoint(record.launchUrl, true);
-        const baseUrl = advertised?.baseUrl ?? launch?.baseUrl;
-        if (!baseUrl) return undefined;
-        const launchUrl = launch?.baseUrl === baseUrl
-            ? launch.launchUrl
-            : advertised?.baseUrl === baseUrl
-                ? advertised.launchUrl
-                : undefined;
-        return {
-            baseUrl,
-            ...(launchUrl === undefined ? {} : { launchUrl }),
-        };
-    } catch {
-        // A missing, half-written, or concurrently updated lock advertises nothing.
-        return undefined;
-    }
+function lockRecordEndpoint(record: RuntimeLockRecord): RuntimeEndpoint | undefined {
+    const advertised = parseRuntimeEndpoint(record.url, true);
+    const launch = parseRuntimeEndpoint(record.launchUrl, true);
+    const baseUrl = advertised?.baseUrl ?? launch?.baseUrl;
+    if (!baseUrl) return undefined;
+    const launchUrl = launch?.baseUrl === baseUrl
+        ? launch.launchUrl
+        : advertised?.baseUrl === baseUrl
+            ? advertised.launchUrl
+            : undefined;
+    return { baseUrl, ...(launchUrl === undefined ? {} : { launchUrl }) };
 }
 
 function loopbackRuntimeUrl(value: unknown): string | undefined {
@@ -994,7 +988,7 @@ export class DshRuntime implements vscode.Disposable {
     private authPromise: Promise<void> | undefined;
     private startPromise: Promise<string> | undefined;
     private startedByExtension = false;
-    private runtimeLock: { handle: FileHandle; path: string; createdAt: number } | undefined;
+    private runtimeLock: { handle: FileHandle; path: string; record: RuntimeLockRecord } | undefined;
     private runtimeLockWrite: Promise<void> = Promise.resolve();
     private compactionPatchPath: string | undefined;
     private disposed = false;
@@ -1256,6 +1250,14 @@ export class DshRuntime implements vscode.Disposable {
         this.startPromise = this.startInternal(workspaceRoot);
         try {
             return await this.startPromise;
+        } catch (error) {
+            if (!this.startedByExtension) {
+                this.baseUrl = undefined;
+                this.launchUrl = undefined;
+                this.clearRuntimeAuthentication();
+            }
+            this.setStatus({ state: "error", message: error instanceof Error ? error.message : String(error) });
+            throw error;
         } finally {
             this.startPromise = undefined;
         }
@@ -2150,7 +2152,9 @@ export class DshRuntime implements vscode.Disposable {
             return url;
         }
 
-        if (this.baseUrl && (await this.isHarnessHealthy(this.baseUrl))) {
+        if (this.baseUrl && this.startedByExtension &&
+            this.runtimeLock?.record.runtimeVersion === RUNTIME_DEFAULT_VERSION &&
+            (await this.isHarnessHealthy(this.baseUrl))) {
             this.setStatus({ state: "running", url: this.baseUrl });
             this.harnessState.start();
             return this.baseUrl;
@@ -2218,7 +2222,26 @@ export class DshRuntime implements vscode.Disposable {
         args = isPackageManagerSource(launcher.source) ? pinDshPackageArgs(launchArgs) : launchArgs;
         this.output.appendLine(`[dsh] discovered executable: ${command} (${describeSource(launcher.source)})`);
 
-        if (!(await this.acquireRuntimeLock())) {
+        // Never label an arbitrary installed binary with the extension's target version.
+        let launchVersion: string | undefined;
+        if (isPackageManagerSource(launcher.source)) {
+            const spec = args.find(argument => argument.startsWith(`${DSH_PACKAGE}@`));
+            const version = spec?.slice(DSH_PACKAGE.length + 1);
+            if (exactRuntimeVersion(version)) launchVersion = version;
+        } else if (launcher.source.kind === "managed") {
+            launchVersion = launcher.source.version;
+        } else {
+            try {
+                const result = await execFileAsync(command, [...launcher.args, "--version"], {
+                    cwd: workspaceRoot, timeout: 5_000, windowsHide: true, shell: launcherNeedsShell(command),
+                });
+                const version = result.stdout.trim();
+                if (exactRuntimeVersion(version)) launchVersion = version;
+            } catch { /* Unknown launchers need explicit version identification before owning a shared lock. */ }
+        }
+        this.requireRuntimeVersion(launchVersion);
+
+        if (!(await this.acquireRuntimeLock(launchVersion!))) {
             const deadline = Date.now() + startupTimeout;
             while (Date.now() < deadline) {
                 const endpoint = await this.findExistingRuntime(configuredPort);
@@ -2299,6 +2322,10 @@ export class DshRuntime implements vscode.Disposable {
         }
 
         const launchAttempt = async (attemptArgs: string[]): Promise<string> => {
+            if (this.runtimeLock?.record.runtimePid !== undefined &&
+                !await runtimeHasExited(this.runtimeLock.record)) {
+                throw new Error(t("The previous DSH launcher may still have a running server. Its lock was retained; inspect the processes before retrying."));
+            }
             const candidatePort = portFromArgs(attemptArgs);
             this.baseUrl = candidatePort
                 ? `http://127.0.0.1:${candidatePort}`
@@ -2332,6 +2359,14 @@ export class DshRuntime implements vscode.Disposable {
             });
             this.child = child;
             this.startedByExtension = true;
+            if (this.runtimeLock && child.pid !== undefined) {
+                this.runtimeLock.record.runtimePid = child.pid;
+                this.runtimeLock.record.runtimeProcess = isPackageManagerSource(launcher.source) || launcherNeedsShell(command)
+                    ? "wrapper" : "direct";
+                // A new launcher must not inherit the previous attempt's port as liveness evidence.
+                delete this.runtimeLock.record.url;
+                delete this.runtimeLock.record.launchUrl;
+            }
 
             let exited = false;
             let launchError: Error | undefined;
@@ -2388,6 +2423,8 @@ export class DshRuntime implements vscode.Disposable {
                 }, 15_000)
                 : undefined;
             try {
+                // Persist the spawned PID before waiting for HTTP readiness or attempting a retry.
+                await this.publishRuntimeLockUrl();
                 const url = await this.waitForReady(
                     undefined,
                     readinessTimeout,
@@ -2622,6 +2659,11 @@ export class DshRuntime implements vscode.Disposable {
     }
 
     private async findExistingRuntime(configuredPort: number): Promise<RuntimeEndpoint | undefined> {
+        // A package-manager descendant can outlive stop() briefly. Keep ownership
+        // until it exits, then let this same editor release its retained lock.
+        if (this.runtimeLock && !this.child && await runtimeHasExited(this.runtimeLock.record)) {
+            await this.releaseRuntimeLock();
+        }
         const advertisedEndpoint = await this.readRuntimeEndpoint();
         if (advertisedEndpoint) {
             this.setRuntimeEndpoint(advertisedEndpoint);
@@ -2641,7 +2683,11 @@ export class DshRuntime implements vscode.Disposable {
                 ? advertisedEndpoint
                 : { baseUrl: url };
             this.setRuntimeEndpoint(endpoint);
-            if (await this.isHarnessHealthy(url)) return endpoint;
+            if (await this.isHarnessHealthy(url)) {
+                // Automatic discovery must not bypass the shared lock's version check.
+                if (advertisedEndpoint?.baseUrl !== url) this.requireRuntimeVersion(undefined);
+                return endpoint;
+            }
             this.clearRuntimeAuthentication();
         }
         // Probing writes the candidate endpoint so ensureAuthenticated can read
@@ -2746,92 +2792,98 @@ export class DshRuntime implements vscode.Disposable {
         }
     }
 
-    private async acquireRuntimeLock(): Promise<boolean> {
-        // A peer on the pre-rename lock cannot see ours, so check its file
-        // first: deferring to a live legacy owner is what keeps the transition
-        // from spawning two Runtimes.
-        if (await this.legacyRuntimeLockOwnerAlive()) return false;
+    private requireRuntimeVersion(version: string | undefined): void {
+        if (version === RUNTIME_DEFAULT_VERSION) return;
+        throw new RemoteProtocolError(t(
+            "DSH Runtime version is {actual}; this extension requires {expected}. Stop or upgrade the existing Runtime in its owning editor, then restart DSH. The shared lock was not removed and no process was stopped.",
+            { actual: version ?? t("unknown (unversioned lock or launcher)"), expected: RUNTIME_DEFAULT_VERSION },
+        ));
+    }
+
+    private async acquireRuntimeLock(runtimeVersion: string): Promise<boolean> {
+        this.requireRuntimeVersion(runtimeVersion);
+        return mutateRuntimeLock(join(tmpdir(), RUNTIME_LOCK_FILE), () => this.acquireRuntimeLockExclusive(runtimeVersion));
+    }
+
+    private async acquireRuntimeLockExclusive(runtimeVersion: string): Promise<boolean> {
+        // Legacy locks still participate in exclusion, even when they cannot be reused.
+        for (const name of [LEGACY_RUNTIME_LOCK_FILE, RUNTIME_LOCK_FILE]) {
+            const existing = await readRuntimeLock(join(tmpdir(), name));
+            if (!existing) continue;
+            if (!await canReclaimRuntimeLock(existing) || !await removeRuntimeLock(existing)) return false;
+            this.output.appendLine(`[dsh] removed stale Runtime lock: ${name} (recorded processes exited; no live listener)`);
+        }
         const path = join(tmpdir(), RUNTIME_LOCK_FILE);
+        let handle: FileHandle;
         try {
-            const handle = await open(path, "wx", 0o600);
-            const createdAt = Date.now();
-            await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt }), "utf8");
-            this.runtimeLock = { handle, path, createdAt };
+            handle = await open(path, "wx", 0o600);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+            throw error;
+        }
+        const record: RuntimeLockRecord = { pid: process.pid, createdAt: Date.now(), ownerId: randomUUID(), runtimeVersion };
+        this.runtimeLock = { handle, path, record };
+        try {
+            await handle.writeFile(JSON.stringify(record), "utf8");
+            await handle.sync();
             return true;
         } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-            try {
-                const contents = await readFile(path, "utf8");
-                const pid = Number((JSON.parse(contents) as { pid?: unknown }).pid);
-                if (Number.isInteger(pid) && pid > 0) {
-                    try {
-                        process.kill(pid, 0);
-                        return false;
-                    } catch (probeError) {
-                        if ((probeError as NodeJS.ErrnoException).code !== "ESRCH") return false;
-                    }
-                }
-                await unlink(path);
-                return this.acquireRuntimeLock();
-            } catch (staleError) {
-                if ((staleError as NodeJS.ErrnoException).code === "ENOENT") return this.acquireRuntimeLock();
-                return false;
-            }
+            this.runtimeLock = undefined;
+            await handle.close();
+            // Leave a partial lock occupied: deleting it without a readable identity is unsafe.
+            throw error;
         }
     }
 
     private async readRuntimeEndpoint(): Promise<RuntimeEndpoint | undefined> {
-        // The shared lock wins; the legacy one still answers for a peer that
-        // has not updated yet.
+        // Opening and publication use the same mutex; readers never mistake an
+        // ordinary truncate/write window for a permanently corrupt lock.
+        return mutateRuntimeLock(join(tmpdir(), RUNTIME_LOCK_FILE), () => this.readRuntimeEndpointExclusive());
+    }
+
+    private async readRuntimeEndpointExclusive(): Promise<RuntimeEndpoint | undefined> {
+        let endpoint: RuntimeEndpoint | undefined;
         for (const name of [RUNTIME_LOCK_FILE, LEGACY_RUNTIME_LOCK_FILE]) {
-            const endpoint = await readLockRecord(join(tmpdir(), name));
-            if (endpoint) return endpoint;
-        }
-        return undefined;
-    }
-
-    /**
-     * Whether a pre-rename peer is holding its own lock right now. A lock with
-     * no readable live pid is stale and does not block us.
-     */
-    private async legacyRuntimeLockOwnerAlive(): Promise<boolean> {
-        try {
-            const contents = await readFile(join(tmpdir(), LEGACY_RUNTIME_LOCK_FILE), "utf8");
-            const pid = Number((JSON.parse(contents) as { pid?: unknown }).pid);
-            if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
-            try {
-                process.kill(pid, 0);
-                return true;
-            } catch (probeError) {
-                return (probeError as NodeJS.ErrnoException).code !== "ESRCH";
+            const snapshot = await readRuntimeLock(join(tmpdir(), name));
+            if (!snapshot) continue;
+            if (await canReclaimRuntimeLock(snapshot)) continue;
+            const record = snapshot.record;
+            if (!record) {
+                throw new RemoteProtocolError(t("The shared DSH Runtime lock is unreadable or incomplete. Retry after startup finishes; if it persists, inspect the lock and its processes before removing it: {path}", { path: snapshot.path }));
             }
-        } catch {
-            return false;
+            this.requireRuntimeVersion(record.runtimeVersion);
+            endpoint ??= lockRecordEndpoint(record);
         }
+        return endpoint;
     }
 
-    private publishRuntimeLockUrl(endpoint: RuntimeEndpoint): Promise<void> {
+    private publishRuntimeLockUrl(endpoint?: RuntimeEndpoint): Promise<void> {
         const lock = this.runtimeLock;
-        const advertisedUrl = loopbackRuntimeUrl(endpoint.baseUrl);
-        if (!lock || !advertisedUrl) return Promise.resolve();
-        const launchUrl = endpoint.launchUrl === undefined
+        const advertisedUrl = endpoint && loopbackRuntimeUrl(endpoint.baseUrl);
+        if (!lock || (endpoint && !advertisedUrl)) return Promise.resolve();
+        const launchUrl = endpoint?.launchUrl === undefined
             ? undefined
             : parseRuntimeEndpoint(endpoint.launchUrl, true)?.launchUrl;
 
         const write = this.runtimeLockWrite
             .catch(() => undefined)
-            .then(async () => {
+            .then(() => mutateRuntimeLock(lock.path, async () => {
                 if (this.runtimeLock !== lock) return;
-                const contents = JSON.stringify({
-                    pid: process.pid,
-                    createdAt: lock.createdAt,
-                    url: advertisedUrl,
-                    ...(launchUrl === undefined ? {} : { launchUrl }),
-                });
+                const current = await readRuntimeLock(lock.path);
+                if (!current || current.record?.ownerId !== lock.record.ownerId ||
+                    !sameRuntimeLockFile(await lock.handle.stat(), current.stat)) {
+                    throw new Error("DSH Runtime lock ownership changed before publication");
+                }
+                if (this.child?.pid !== undefined) lock.record.runtimePid = this.child.pid;
+                if (advertisedUrl) {
+                    lock.record.url = advertisedUrl;
+                    lock.record.launchUrl = launchUrl;
+                }
+                const contents = JSON.stringify(lock.record);
                 await lock.handle.truncate(0);
                 await lock.handle.write(contents, 0, "utf8");
                 await lock.handle.sync();
-            });
+            }));
         this.runtimeLockWrite = write;
         return write;
     }
@@ -2840,11 +2892,26 @@ export class DshRuntime implements vscode.Disposable {
         const lock = this.runtimeLock;
         this.runtimeLock = undefined;
         if (!lock) return;
+        let retained = false;
         try {
             await this.runtimeLockWrite.catch(() => undefined);
-            await lock.handle.close();
+            await mutateRuntimeLock(lock.path, async () => {
+                const current = await readRuntimeLock(lock.path);
+                if (!current || current.record?.ownerId !== lock.record.ownerId ||
+                    !sameRuntimeLockFile(await lock.handle.stat(), current.stat)) return;
+                const neverSpawned = lock.record.runtimePid === undefined && lock.record.url === undefined;
+                if (!neverSpawned && !await runtimeHasExited(lock.record)) {
+                    // Retain the identity/handle so a later restart in this editor
+                    // can clean up once the descendant has actually exited.
+                    this.runtimeLock = lock;
+                    retained = true;
+                    this.output.appendLine("[dsh] retained Runtime lock: the launcher or listener may still be alive; no process was stopped by lock cleanup");
+                    return;
+                }
+                if (await removeRuntimeLock(current)) this.output.appendLine("[dsh] released owned Runtime lock");
+            });
         } finally {
-            await unlink(lock.path).catch(() => undefined);
+            if (!retained) await lock.handle.close();
         }
     }
 

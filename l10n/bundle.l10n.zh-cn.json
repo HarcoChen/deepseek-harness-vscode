@@ -495,5 +495,10 @@
     "Provider ID is invalid.": "提供商 ID 无效。",
     "A provider with this ID already exists.": "已存在使用此 ID 的提供商。",
     "Custom providers require an endpoint": "自定义提供商必须设置端点",
-    "Create a pi-ai gateway provider with endpoint, protocol, and models": "使用端点、协议和模型创建 pi-ai 网关提供商"
+    "Create a pi-ai gateway provider with endpoint, protocol, and models": "使用端点、协议和模型创建 pi-ai 网关提供商",
+    "DSH Runtime version is {actual}; this extension requires {expected}. Stop or upgrade the existing Runtime in its owning editor, then restart DSH. The shared lock was not removed and no process was stopped.": "DSH Runtime 版本为 {actual}，本扩展要求 {expected}。请在所属编辑器中停止或升级已有 Runtime，再重启 DSH。共享锁未删除，也未停止任何进程。",
+    "unknown (unversioned lock or launcher)": "未知（锁文件或启动器未提供版本）",
+    "The shared DSH Runtime lock is unreadable or incomplete. Retry after startup finishes; if it persists, inspect the lock and its processes before removing it: {path}": "DSH 共享锁不可读或内容不完整。请等待启动完成后重试；若仍然存在，请检查锁及其进程后再清理：{path}",
+    "DSH Runtime lock mutation is busy or abandoned: {path}. Retry; if it persists, verify its owner has exited before manual cleanup.": "DSH Runtime 锁正在更新或更新保护文件已遗留：{path}。请重试；若仍然存在，请确认其所有者已退出后再手动清理。",
+    "The previous DSH launcher may still have a running server. Its lock was retained; inspect the processes before retrying.": "上一次 DSH 启动器的服务可能仍在运行。锁文件已保留，请检查进程后再重试。"
 }

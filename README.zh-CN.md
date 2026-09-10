@@ -122,6 +122,18 @@
 
 多个 VS Code 窗口优先复用同一个本地 Harness Runtime。扩展启动的 Runtime 通过进程锁公布其随机 loopback 端口，后续窗口直接连接，避免多写冲突。
 
+共享锁仍叫 `dsh-runtime.lock`，位于系统临时目录。内容记录 `runtimeVersion`、所有者 `pid` / `ownerId` / `createdAt`、启动进程 `runtimePid` / `runtimeProcess` 和连接地址。版本来自固定 npm 包规格、托管版本或本地启动器的 `--version`，不会把未知启动器标记成本扩展的默认版本。自动复用只接受与本扩展目标完全匹配的版本；无版本旧锁、版本不匹配以及没有版本锁记录的自动端口发现都会明确报错，不再误连旧实例。手动指定 `dsh.serverUrl` 仍由使用者保证 Runtime 版本。
+
+锁清理规则：
+
+- 正常停止后，仅释放本实例拥有的锁；同时核对 `ownerId`、文件身份及内容，保留其他所有者替换后的锁。
+- 自动回收要求编辑器 PID 和启动进程 PID 都已退出；曾发布端口的实例还必须明确拒绝本地 TCP 连接。HTTP 错误、权限不足或超时不算进程已退出。
+- pnpm/npx 的 PID 是启动器，不保证是实际服务进程。未公布地址的包装启动器、缺少进程信息的旧锁、损坏或半写入的锁均保守保留，需人工检查；不会自动停止任何其他实例。端口仍存活时，本所有者保留锁身份，服务退出后可再次释放。
+- 这也意味着：pnpm/npx 在公布地址前下载失败时，无法证明没有遗留服务，会停止自动 registry 回退重试并保留锁；检查进程并清理后再重试。
+- 创建、写入和删除通过短暂的 `dsh-runtime.lock.mutation` 互斥文件串行化，防止两个窗口同时回收旧锁。若进程恰在修改锁期间崩溃，该保护文件不会被猜测性删除；错误信息会给出路径，确认其所有者已退出后再手动清理。不要在 Runtime 正在运行时手动删锁。
+
+可运行 `npm run compile && node scripts/verify-runtime-lock.mjs` 验证上述生命周期；脚本仅使用隔离临时目录、子进程及回环监听器。
+
 ```mermaid
 graph TD
     A[VS Code Extension Host] <-->|RC Remote RPC| B[Standalone Harness Runtime]

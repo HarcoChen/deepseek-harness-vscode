@@ -49,3 +49,11 @@ Workspace follow、session/control 的 queue/jobs/projection、会话 catalog/mo
 - 流式联调：观察真实 `start/chunk/end` 帧，在回答中途重连后恢复 `Hello` 前缀，最终仅保留一条 `Hello world`。两次模型请求均到进程内回环模拟服务，没有外部模型调用；本轮临时 Session 和设置已清理。
 - Goal：创建、暂停、恢复、清除及 `armed/disarmed` 事件均通过；命令验证 `submittedAttachments` 参数封装，子代理跟进验证 `request.delivery` 正确到达缺失子代理的业务校验。
 - 尚未实测：VS Code 中的手动 UI 交互、审批/提问完整流程、成功执行的子代理工具生命周期、实际图片附件处理，以及缺失 CNB 镜像的 standalone 安装。子代理参数冒烟不等同于完整子代理执行测试。
+
+## 共享锁版本与清理补充
+
+用户现场的 `assistantStream` opening baseline 错误来自新版扩展复用共享锁公布的 `0.1.2-rc.1` 进程，并非 `0.1.5-rc.1` 的空闲会话缺少 baseline。默认启动版本 pin 不会升级已经运行的旧实例。
+
+按确认后的方案保留公共 `dsh-runtime.lock` 文件名，在内容中追加 `runtimeVersion`、`ownerId`、`runtimePid` 和 `runtimeProcess`。自动发现及缓存复用受版本检查约束；旧锁或未知启动器不会被补写为目标版本。清理要求进程退出及明确的本地端口拒绝，锁修改通过短暂的 `.mutation` 文件串行化，释放校验所有权和文件身份。不能证明失效的锁保留，不停止其他实例。pnpm/npx 在未公布地址前失败时也保留锁并阻止自动换源重试；具体操作边界见 README 的锁清理规则。
+
+验证：`scripts/verify-runtime-lock.mjs` 的 9 组临时目录/进程/监听器集成检查通过，包括版本不匹配、旧锁、残留监听器、并发回收、所有权替换、缓存重试及遗留修改保护文件；现有 50 项测试与编译通过，未新增或修改单元测试。现场旧锁及旧 Runtime 未被更改或停止。

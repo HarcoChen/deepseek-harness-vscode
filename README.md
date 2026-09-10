@@ -125,6 +125,18 @@ The extension connects to the Runtime through RC Remote RPC, using HTTP calls an
 
 Multiple VS Code windows preferentially reuse the same local Harness Runtime. The Runtime launched by the extension publishes a random loopback port through a process lock; later windows connect directly, avoiding competing writes.
 
+The shared file remains `dsh-runtime.lock` in the OS temporary directory. Its contents include `runtimeVersion`, owner `pid` / `ownerId` / `createdAt`, launcher `runtimePid` / `runtimeProcess`, and connection addresses. The version comes from an exact npm package spec, the managed version, or the local launcher's `--version`, never an assumed default for an unknown binary. Automatic reuse requires an exact match to this extension's target. Unversioned or mismatched locks, and automatic port discovery without a versioned lock, produce an actionable error. Explicit `dsh.serverUrl` connections remain the operator's responsibility for version compatibility.
+
+Lock cleanup rules:
+
+- Normal shutdown releases only the owned lock, checking its owner ID, file identity, and contents; a replacement owned by another instance is preserved.
+- Automatic reclamation requires both recorded owner and launcher PIDs to have exited. Previously advertised local ports must also explicitly refuse TCP connections. HTTP errors, access-denied errors, and timeouts do not prove exit.
+- pnpm/npx PIDs identify launchers, not necessarily their server descendants. Wrapper launches without a published address, legacy records without process metadata, and malformed/partial locks are retained for manual inspection. Cleanup never stops another instance. An owner retains its lock identity while a listener survives, so it can release it after that listener exits.
+- Consequently, pnpm/npx download failures before URL publication also stop automatic alternate-registry retries and retain the lock: they cannot prove no server descendant survived. Inspect processes and clean up before retrying.
+- A short-lived `dsh-runtime.lock.mutation` mutex serializes creation, publication, and removal across updated editors. If a process crashes during mutation, the guard is not automatically removed: the diagnostic gives its path for manual cleanup after verifying its owner exited. Never manually remove a lock while its Runtime is running.
+
+Run `npm run compile && node scripts/verify-runtime-lock.mjs` to check the lifecycle using only an isolated temporary directory, child processes, and loopback listeners.
+
 ```mermaid
 graph TD
     A[VS Code Extension Host] <-->|RC Remote RPC| B[Standalone Harness Runtime]
