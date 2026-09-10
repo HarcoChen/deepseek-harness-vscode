@@ -299,6 +299,16 @@ function launcherNeedsShell(command: string): boolean {
     return !/\.exe$/iu.test(command);
 }
 
+/** Node's shell mode joins the command without quoting its executable path. */
+function launcherShellCommand(command: string): string {
+    if (!launcherNeedsShell(command)) return command;
+    // Quotes protect spaces and shell operators. Expansion markers cannot be
+    // represented literally by this cmd.exe invocation, so fail closed rather
+    // than execute a different path discovered from PATH or npm's prefix.
+    if (/["%!\r\n]/u.test(command)) throw new Error("DSH launcher path cannot be safely invoked through the Windows shell");
+    return `"${command}"`;
+}
+
 async function findExecutable(command: string): Promise<string | undefined> {
     const mode = process.platform === "win32" ? fsConstants.F_OK : fsConstants.X_OK;
     const candidates: string[] = [];
@@ -563,6 +573,34 @@ interface DiscoverDshOptions {
     proxy?: string;
     onLog?: (message: string) => void;
     signal?: AbortSignal;
+    cwd?: string;
+}
+
+/** Defaults follow the selected launcher; explicitly saved arguments stay authoritative. */
+function configuredLaunchArgs(configuration: vscode.WorkspaceConfiguration, command: string): string[] {
+    const inspected = configuration.inspect?.<string[]>("commandArgs");
+    const explicit = inspected && [inspected.globalValue, inspected.workspaceValue, inspected.workspaceFolderValue,
+        inspected.globalLanguageValue, inspected.workspaceLanguageValue, inspected.workspaceFolderLanguageValue]
+        .some(value => value !== undefined);
+    if (!inspected || explicit) return configuration.get<string[]>("commandArgs", ["web", "--no-open"]);
+    if (command === "pnpm") return ["dlx", DSH_PACKAGE, "web", "--no-open"];
+    if (command === "npx") return ["--yes", DSH_PACKAGE, "web", "--no-open"];
+    return ["web", "--no-open"];
+}
+
+async function probeRuntimeVersion(command: string, options: { cwd?: string; signal?: AbortSignal }): Promise<string | undefined> {
+    options.signal?.throwIfAborted();
+    try {
+        const result = await execFileAsync(launcherShellCommand(command), ["--version"], {
+            cwd: options.cwd, signal: options.signal, timeout: 5_000,
+            windowsHide: true, shell: launcherNeedsShell(command),
+        });
+        const version = result.stdout.trim();
+        return exactRuntimeVersion(version) ? version : undefined;
+    } catch {
+        options.signal?.throwIfAborted();
+        return undefined;
+    }
 }
 
 function isPackageManagerSource(source: DshRuntimeSource): source is Extract<DshRuntimeSource, { kind: "npx" | "pnpm" }> {
@@ -607,9 +645,8 @@ const DSH_PACKAGE = "@deepseek-ai/dsh";
  * A bare `@deepseek-ai/dsh` resolves to the dist-tag `latest`, so publishing a
  * Runtime moves existing installations onto it at the next cold start — and a
  * Runtime release may replace the wire protocol wholesale. The pin is a
- * compile-time constant rather than a setting because the manifest default of
- * dsh.commandArgs already spells the package out, so every installation that
- * never touched its settings carries the unpinned spec.
+ * compile-time constant rather than a setting; both automatic fallbacks and
+ * explicit package-manager commands pass through this pin.
  *
  * An operator who wrote an explicit `@deepseek-ai/dsh@<version>` asked for that
  * version and keeps it; only the unpinned spec is rewritten.
@@ -849,15 +886,16 @@ async function discoverManagedRuntime(options: DiscoverDshOptions): Promise<DshL
 }
 
 /**
- * Resolve the DSH launcher in order: configured command, PATH dsh, npm global
- * prefix, pnpm dlx/npx, and finally the managed Runtime (cached, then
- * downloaded). Every provider failure is aggregated into the final error so a
+ * Auto resolves compatible PATH/npm-global dsh, then pinned pnpm/npx, then
+ * managed Runtime. Explicit launchers take priority and are never replaced by
+ * local auto-discovery. Every provider failure is aggregated into the final error so a
  * failed download is never masked as a generic "dsh not available".
  */
 async function discoverDsh(command: string, options: DiscoverDshOptions): Promise<DshLauncher> {
     const failures: string[] = [];
 
-    if (await executableExists(command)) {
+    options.signal?.throwIfAborted();
+    if (command !== "auto" && await executableExists(command)) {
         return isPackageManagerCommand(command)
             ? packageManagerLauncher(command, [])
             : { command, args: [], source: { kind: "configured", command, args: [] } };
@@ -902,19 +940,41 @@ async function discoverDsh(command: string, options: DiscoverDshOptions): Promis
         }
         throw new Error(t("Unable to start DSH Runtime.\n\n{reasons}", { reasons: failures.join("\n") }));
     }
-    if (command !== "dsh") {
+    if (command !== "auto") {
         throw new Error(t("Start command “{command}” was not found. Configure an absolute dsh.command path or install the dsh CLI.", { command }));
     }
-    failures.push(t("PATH dsh: not found"));
-
-    if (await executableExists("dsh")) {
-        return { command: "dsh", args: [], source: { kind: "path", command: "dsh", args: [] } };
-    }
+    // Accept old saved package-manager arguments in auto mode, but never pass
+    // dlx/package/registry prefixes to the native CLI. An explicit different
+    // package version must reach the usual compatibility error, not be ignored.
+    const packageIndex = options.configuredArgs.findIndex(arg => /^@deepseek-ai\/dsh(?:@|$)/u.test(arg));
+    const packageSpec = packageIndex < 0 ? undefined : options.configuredArgs[packageIndex];
+    const localArgs = packageIndex < 0 ? options.configuredArgs : options.configuredArgs.slice(packageIndex + 1);
+    const permitsLocal = packageSpec === undefined || packageSpec === DSH_PACKAGE || packageSpec === `${DSH_PACKAGE}@${RUNTIME_DEFAULT_VERSION}`;
+    const checked = new Set<string>();
+    const compatibleLocal = async (path: string, kind: "path" | "npm-prefix"): Promise<DshLauncher | undefined> => {
+        if (!permitsLocal || checked.has(path)) return undefined;
+        checked.add(path);
+        const version = await probeRuntimeVersion(path, options);
+        if (version !== RUNTIME_DEFAULT_VERSION) {
+            const reason = `[dsh] skipped local CLI ${path}: version ${version ?? "unknown"}; requires ${RUNTIME_DEFAULT_VERSION}`;
+            failures.push(reason);
+            options.onLog?.(reason);
+            return undefined;
+        }
+        options.onLog?.(`[dsh] compatible local CLI ${path}: ${version}`);
+        return { command: path, args: [...localArgs], usesConfiguredArgs: false,
+            source: { kind, command: path, args: [] } };
+    };
+    const localPath = await findExecutable("dsh");
+    if (localPath) {
+        const launcher = await compatibleLocal(localPath, "path");
+        if (launcher) return launcher;
+    } else failures.push(t("PATH dsh: not found"));
 
     let npmPrefixProbed = false;
     try {
         const result = await execFileAsync("npm", ["prefix", "-g"], {
-            timeout: 10_000,
+            cwd: options.cwd, signal: options.signal, timeout: 5_000,
             windowsHide: true,
             shell: process.platform === "win32",
         });
@@ -925,11 +985,13 @@ async function discoverDsh(command: string, options: DiscoverDshOptions): Promis
             for (const name of process.platform === "win32" ? ["dsh.cmd", "dsh.exe", "dsh.ps1", "dsh"] : ["dsh"]) {
                 const candidate = join(binDir, name);
                 if (await executableExists(candidate)) {
-                    return { command: candidate, args: [], source: { kind: "npm-prefix", command: candidate, args: [] } };
+                    const launcher = await compatibleLocal(candidate, "npm-prefix");
+                    if (launcher) return launcher;
                 }
             }
         }
     } catch {
+        options.signal?.throwIfAborted();
         failures.push(t("npm: unavailable"));
     }
     if (npmPrefixProbed) {
@@ -1101,8 +1163,8 @@ export class DshRuntime implements vscode.Disposable {
     /** Returns a redacted, read-only environment report without starting dsh. */
     public async diagnoseEnvironment(workspaceRoot?: string): Promise<string> {
         const configuration = this.configuration();
-        const command = configuration.get<string>("command", "dsh").trim() || "dsh";
-        const configuredArgs = configuration.get<string[]>("commandArgs", ["web", "--no-open"]);
+        const command = configuration.get<string>("command", "auto").trim() || "auto";
+        const configuredArgs = configuredLaunchArgs(configuration, command);
         const args = Array.isArray(configuredArgs)
             ? configuredArgs.filter((argument): argument is string => typeof argument === "string")
             : [];
@@ -1140,6 +1202,7 @@ export class DshRuntime implements vscode.Disposable {
                 runtimeVersion,
                 configuredArgs: args,
                 allowManaged: false,
+                cwd: workspaceRoot,
                 proxy: this.httpProxy(),
             });
             discovery = `${launcher.command} (${describeSource(launcher.source)})`;
@@ -2241,8 +2304,8 @@ export class DshRuntime implements vscode.Disposable {
             this.setStatus({ state: "starting", message: t("Starting dsh web...") });
         }
 
-        let command = this.configuration().get<string>("command", "dsh").trim() || "dsh";
-        const configuredArgs = this.configuration().get<string[]>("commandArgs", ["web", "--no-open"]);
+        let command = configuration.get<string>("command", "auto").trim() || "auto";
+        const configuredArgs = configuredLaunchArgs(configuration, command);
         let args = [...configuredArgs];
         const enableCompaction = this.configuration().get<boolean>("enableCompaction", true);
 
@@ -2259,6 +2322,7 @@ export class DshRuntime implements vscode.Disposable {
                     RUNTIME_DEFAULT_VERSION,
                 configuredArgs,
                 allowManaged: true,
+                cwd: workspaceRoot,
                 signal,
                 proxy: this.httpProxy(),
                 onLog: (message) => { if (!signal.aborted) this.output.appendLine(message); },
@@ -2291,13 +2355,7 @@ export class DshRuntime implements vscode.Disposable {
         } else if (launcher.source.kind === "managed") {
             launchVersion = launcher.source.version;
         } else {
-            try {
-                const result = await execFileAsync(command, [...launcher.args, "--version"], {
-                    cwd: workspaceRoot, timeout: 5_000, windowsHide: true, shell: launcherNeedsShell(command),
-                });
-                const version = result.stdout.trim();
-                if (exactRuntimeVersion(version)) launchVersion = version;
-            } catch { /* Unknown launchers need explicit version identification before owning a shared lock. */ }
+            launchVersion = await probeRuntimeVersion(command, { cwd: workspaceRoot, signal });
         }
         checkStarting();
         this.requireRuntimeVersion(launchVersion);
@@ -2415,7 +2473,7 @@ export class DshRuntime implements vscode.Disposable {
                 }
             }
             this.terminatedRuntimeLock = undefined;
-            const child = spawnOwnedRuntime(command, attemptArgs, {
+            const child = spawnOwnedRuntime(launcherShellCommand(command), attemptArgs, {
                 cwd: workspaceRoot,
                 env: launchEnv,
                 // Windows batch and PowerShell launchers fail with EINVAL unless

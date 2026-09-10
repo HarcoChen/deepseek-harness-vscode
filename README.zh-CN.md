@@ -106,7 +106,11 @@
 
 **可以连接已有 Runtime 吗？** 可以，将 `dsh.serverUrl` 设置为正在运行的 `dsh web` 地址；如果地址中没有 Token，再将启动 Token 填入 `dsh.serverToken`。本扩展适配目标为 `dsh 0.1.5-rc.1`，包含 V3 历史和显式订阅的 Assistant 流。手动管理的实例也需要升级：更早的 RC 没有所需的流式契约，更高版本则需另行审计。会话迁移保留原始日志，但旧 Runtime 无法读取迁移后的 V3 文件。
 
-默认包管理器启动固定为 `0.1.5-rc.1`，官方 npm 已提供此版本。本次适配检查时，CNB 独立 Runtime 镜像的该版本仍返回 404；镜像发布前请使用默认 pnpm/npx 启动，或连接已有的 `0.1.5-rc.1` 实例，独立 Runtime 下载路径目前尚未验证通过。
+默认 `dsh.command: "auto"` 依次探测 PATH 和 npm 全局目录中的 `dsh --version`。兼容的本机 CLI 优先使用；缺失、版本未知或不兼容则回退固定 `0.1.5-rc.1` 的 pnpm/npx，再尝试托管 Runtime。目前只接受该精确版本，不把任意更高版本视为兼容，也不会升级或覆盖全局安装。显式指定启动器路径时，版本不兼容直接报错；显式 pnpm/npx 保留包管理器启动。若之前保存了 `dsh.command: "pnpm"`，需重置该设置或改为 `auto` 才会启用本机优先。
+
+默认应用参数为 `web --no-open`，没有保存参数覆盖时会自动为 pnpm/npx 补齐启动前缀。已有包管理器参数配置保留，auto 选中本机 CLI 时移除包管理器及包名前缀。共享 Runtime 的发现及锁迁移仍先于新启动器选择，回退不会绕过占用中的锁。
+
+本次适配检查时，CNB 独立 Runtime 镜像的 `0.1.5-rc.1` 仍返回 404；镜像发布前可使用兼容的本机 CLI、固定版本的 pnpm/npx 回退或已有实例，独立 Runtime 下载路径尚未验证通过。编译后可执行 `node scripts/verify-runtime-discovery.mjs`，在隔离 POSIX CLI 环境中验证选择及实际启动参数，不下载包、不请求模型。
 
 **支持多根工作区吗？** DSH 支持多个彼此独立的 Workspace，但每个 Session 只有一个工作目录（`cwd`）。VS Code 多根工作区启动 Runtime 时使用第一个 workspace folder；如果不同根目录需要不同工作目录，请分别建立 DSH Workspace 或 Session。
 
