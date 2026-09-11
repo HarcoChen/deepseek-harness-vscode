@@ -31,22 +31,20 @@ function normalized(path: string): string {
     return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
-function hasArgument(args: readonly string[], name: string): boolean {
-    return args.some((argument) => argument === name || argument.startsWith(`${name}=`));
-}
-
 function materializedPortArgs(args: readonly string[]): string[] {
     const result: string[] = [];
     for (let index = 0; index < args.length; index += 1) {
         const argument = args[index];
-        if (argument === "--port" || argument === "-p") {
+        if (argument === "--port" || argument === "-p" || argument === "--host") {
             index += 1;
             continue;
         }
-        if (argument.startsWith("--port=")) continue;
+        if (argument.startsWith("--port=") || argument.startsWith("--host=")) continue;
         result.push(argument);
     }
-    if (!hasArgument(result, "--host")) result.push("--host", "127.0.0.1");
+    // The Oracle probe is a loopback-only sandbox: a caller-provided --host must never
+    // survive, or the probe could bind an interface reachable from outside this machine.
+    result.push("--host", "127.0.0.1");
     result.push("--port", "0");
     if (!result.includes("--no-open")) result.push("--no-open");
     return result;

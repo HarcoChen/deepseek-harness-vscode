@@ -1,12 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { spawnOwnedRuntime, terminateOwnedRuntime } from "../runtimeProcess";
+import { RemoteHttpError } from "../remote/errors";
 import { RemoteUnaryClient } from "../remote/unaryClient";
 import { redactRecoveryText, RecoveryDiagnostics } from "./diagnostics";
 import { SandboxBuildError, SandboxManager, type RecoverySandbox } from "./sandbox";
 import type { CompositionDescriptor, CompositionVariant, HealthEvidence, RecoveryBootLog } from "./types";
 
 const pause = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
+/** A 401/403 is a terminal auth failure, not a transient probe error worth retrying. */
+function isAuthenticationFailure(error: unknown): boolean {
+    return error instanceof RemoteHttpError && error.isAuthenticationFailure;
+}
 
 export interface HealthOracleOptions {
     timeoutMs?: number;
@@ -72,9 +78,15 @@ export class HealthOracle {
             const output = (text: string, stream: "stdout" | "stderr"): void => {
                 for (const match of text.matchAll(/http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+(?:\/\?token=[A-Za-z0-9_-]+)?/gu)) {
                     const url = new URL(match[0]);
+                    const authenticated = url.searchParams.has("token");
+                    // Runtime output routinely mentions a bare loopback URL. Letting such a
+                    // line replace the endpoint would drop the stored launchUrl/cookie and
+                    // the probe would then keep running unauthenticated until it timed out.
+                    if (endpoint && !authenticated) continue;
+                    if (endpoint?.launchUrl === url.href) continue;
                     endpoint = {
                         baseUrl: url.origin,
-                        ...(url.searchParams.has("token") ? { launchUrl: url.href } : {}),
+                        ...(authenticated ? { launchUrl: url.href } : {}),
                     };
                 }
                 const safe = redactRecoveryText(text);
@@ -122,7 +134,9 @@ export class HealthOracle {
                             });
                             const cookie = response.headers.get("set-cookie")?.split(";", 1)[0]?.trim();
                             if (response.status !== 303 || !cookie || !/^[^=;]+=[^;]*$/u.test(cookie)) {
-                                throw new Error(`Runtime authentication returned HTTP ${response.status}`);
+                                throw response.status === 401 || response.status === 403
+                                    ? new RemoteHttpError(endpoint.baseUrl, response.status)
+                                    : new Error(`Runtime authentication returned HTTP ${response.status}`);
                             }
                             endpoint.cookie = cookie;
                         }
@@ -140,6 +154,12 @@ export class HealthOracle {
                     } catch (error) {
                         notes.push(redactRecoveryText(String(error)));
                         if (notes.length > 20) notes.shift();
+                        // Retrying a 401/403 at ~10/s until the timeout would misreport the
+                        // cause as `boot-timeout` instead of the design-required `auth`.
+                        if (isAuthenticationFailure(error)) {
+                            evidence.failureClass = "auth";
+                            throw error;
+                        }
                     }
                 }
                 await pause(100);

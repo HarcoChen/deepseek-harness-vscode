@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { compositionDiff } from "./composition";
 import type {
@@ -93,9 +93,17 @@ export class RecoveryDiagnostics {
             path,
             append: async (stream, text) => {
                 const safe = redactRecoveryText(text);
-                const next = keepBounded(`${contents}[${stream}] ${safe}\n`);
+                const line = `[${stream}] ${safe}\n`;
+                const next = keepBounded(`${contents}${line}`);
                 contents = next.value;
-                truncated ||= next.truncated;
+                // Persist incrementally: if the extension dies during the boot, finish()
+                // never runs and the crash evidence must already be on disk (design 46, 466).
+                if (next.truncated) {
+                    truncated = true;
+                    await writeFile(path, contents, { encoding: "utf8", mode: 0o600 });
+                } else {
+                    await appendFile(path, line, { encoding: "utf8", mode: 0o600 });
+                }
             },
             finish: async (summary) => {
                 const tail = redactRecoveryText(summary.outputTail);
@@ -160,35 +168,57 @@ export class RecoveryDiagnostics {
             { encoding: "utf8", mode: 0o600 },
         );
         await writeFile(join(target, "conclusion.txt"), redactRecoveryText(corrupt?.message ??
-            ledger.sessions.at(-1)?.error ?? ledger.sessions.at(-1)?.attribution?.humanSummary ?? "No recovery recorded."));
+            ledger.sessions.at(-1)?.error ?? ledger.sessions.at(-1)?.attribution?.humanSummary ?? "No recovery recorded."),
+            { encoding: "utf8", mode: 0o600 });
         if (corrupt) {
             // The damaged original stays in place; exporting it verbatim could expose credentials.
-            await writeFile(join(target, "ledger-corrupt.txt"), redactRecoveryText(await readFile(corrupt.path, "utf8")));
+            await writeFile(join(target, "ledger-corrupt.txt"), redactRecoveryText(await readFile(corrupt.path, "utf8")),
+                { encoding: "utf8", mode: 0o600 });
         }
         await this.copyRecentLogs(target);
         return target;
     }
 
     private async copyRecentLogs(target: string): Promise<void> {
+        const gone = (error: unknown): boolean => (error as NodeJS.ErrnoException).code === "ENOENT";
         let sessions: string[] = [];
         try {
             sessions = (await readdir(this.logsDirectory, { withFileTypes: true }))
                 .filter((entry) => entry.isDirectory())
                 .map((entry) => entry.name);
         } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            if (!gone(error)) throw error;
         }
-        const dated = await Promise.all(sessions.map(async name => ({
-            name, time: (await stat(join(this.logsDirectory, name))).mtimeMs,
-        })));
+        // `rotate` deletes old session directories, so anything listed above can vanish
+        // before we stat or read it. Skip the disappeared entries instead of letting one
+        // of them reject and fail the whole export.
+        const dated: Array<{ name: string; time: number }> = [];
+        for (const name of sessions) {
+            try {
+                dated.push({ name, time: (await stat(join(this.logsDirectory, name))).mtimeMs });
+            } catch (error) {
+                if (!gone(error)) throw error;
+            }
+        }
         const recent = dated.sort((a, b) => b.time - a.time).slice(0, 5).map(item => item.name);
         for (const session of recent) {
+            const files = await readdir(join(this.logsDirectory, session), { withFileTypes: true })
+                .catch((error: unknown) => {
+                    if (!gone(error)) throw error;
+                    return undefined;
+                });
+            if (!files) continue;
             const destination = join(target, "logs", basename(session));
             await mkdir(destination, { recursive: true });
-            for (const file of await readdir(join(this.logsDirectory, session), { withFileTypes: true })) {
+            for (const file of files) {
                 if (!file.isFile() || !file.name.endsWith(".log")) continue;
-                await writeFile(join(destination, file.name),
-                    redactRecoveryText(await readFile(join(this.logsDirectory, session, file.name), "utf8")),
+                const contents = await readFile(join(this.logsDirectory, session, file.name), "utf8")
+                    .catch((error: unknown) => {
+                        if (!gone(error)) throw error;
+                        return undefined;
+                    });
+                if (contents === undefined) continue;
+                await writeFile(join(destination, file.name), redactRecoveryText(contents),
                     { encoding: "utf8", mode: 0o600 });
             }
         }
