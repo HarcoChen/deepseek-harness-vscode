@@ -47,6 +47,9 @@ export type ChatViewAction =
     | { type: "start" }
     | { type: "stop" }
     | { type: "openLogs" }
+    | { type: "cancelRecovery" }
+    | { type: "exportRecoveryDiagnostics" }
+    | { type: "restoreRecovery" }
     | { type: "openBrowser" }
     | { type: "openExternalLink"; url: string }
     | { type: "openFileLocation"; path: string; line: number; column?: number }
@@ -200,6 +203,9 @@ export function parseChatViewAction(value: unknown): ChatViewAction | undefined 
         case "start":
         case "stop":
         case "openLogs":
+        case "cancelRecovery":
+        case "exportRecoveryDiagnostics":
+        case "restoreRecovery":
         case "openBrowser":
         case "newSession":
         case "newSessionInCurrentWorkspace":

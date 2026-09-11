@@ -147,6 +147,28 @@ export function activate(context: vscode.ExtensionContext): DshExtensionApi {
             });
         }),
         vscode.commands.registerCommand("dsh.openLogs", () => output.show(true)),
+        vscode.commands.registerCommand("dsh.recovery.cancel", () => {
+            runtime.cancelRecovery();
+        }),
+        vscode.commands.registerCommand("dsh.recovery.openDiagnostics", () => output.show(true)),
+        vscode.commands.registerCommand("dsh.recovery.exportDiagnostics", async () => {
+            await runCommand(t("Export recovery diagnostics"), async () => {
+                const path = await runtime.exportRecoveryDiagnostics();
+                await vscode.env.clipboard.writeText(path);
+                void vscode.window.showInformationMessage(t("DSH recovery diagnostics exported to {path}.", { path }));
+            });
+        }),
+        vscode.commands.registerCommand("dsh.recovery.restore", async () => {
+            await runCommand(t("Restore automatic recovery changes"), async () => {
+                const answer = await vscode.window.showWarningMessage(
+                    t("Restore the automatic DSH recovery changes? The Runtime must be stopped first."),
+                    { modal: true },
+                    t("Restore"),
+                );
+                if (answer !== t("Restore")) return;
+                await runtime.restoreRecovery();
+            });
+        }),
         vscode.commands.registerCommand("dsh.openInBrowser", async () => {
             await runCommand(t("Open dsh Web UI"), () => chatView.openBrowser());
         }),

@@ -16,6 +16,9 @@ export interface RuntimeLockRecord {
     runtimeProcess?: "direct" | "wrapper";
     /** POSIX group owned by this launch, never the editor's process group. */
     runtimeProcessGroup?: number;
+    /** Composition evidence for recovery and orphan diagnosis. */
+    compositionHash?: string;
+    recoverySessionId?: string;
     url?: string;
     launchUrl?: string;
 }
@@ -58,6 +61,8 @@ export async function readRuntimeLock(path: string): Promise<RuntimeLockSnapshot
                     (raw.runtimeProcessGroup === undefined || (validPid(raw.runtimeProcessGroup) && raw.runtimeProcessGroup === raw.runtimePid)) &&
                     (raw.runtimeVersion === undefined || exactRuntimeVersion(raw.runtimeVersion)) &&
                     (raw.ownerId === undefined || (typeof raw.ownerId === "string" && raw.ownerId.length > 0)) &&
+                    (raw.compositionHash === undefined || (typeof raw.compositionHash === "string" && /^[a-f0-9]{64}$/u.test(raw.compositionHash))) &&
+                    (raw.recoverySessionId === undefined || (typeof raw.recoverySessionId === "string" && raw.recoverySessionId.length > 0)) &&
                     (raw.url === undefined || typeof raw.url === "string") &&
                     (raw.launchUrl === undefined || typeof raw.launchUrl === "string")) record = raw as unknown as RuntimeLockRecord;
             }
