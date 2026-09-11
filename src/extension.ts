@@ -159,13 +159,15 @@ export function activate(context: vscode.ExtensionContext): DshExtensionApi {
             });
         }),
         vscode.commands.registerCommand("dsh.recovery.restore", async () => {
+            // Ask outside runCommand: returning from inside its callback completes
+            // normally and would report a successful restore that never happened.
+            const answer = await vscode.window.showWarningMessage(
+                t("Restore the automatic DSH recovery changes? The Runtime must be stopped first."),
+                { modal: true },
+                t("Restore"),
+            );
+            if (answer !== t("Restore")) return;
             await runCommand(t("Restore automatic recovery changes"), async () => {
-                const answer = await vscode.window.showWarningMessage(
-                    t("Restore the automatic DSH recovery changes? The Runtime must be stopped first."),
-                    { modal: true },
-                    t("Restore"),
-                );
-                if (answer !== t("Restore")) return;
                 await runtime.restoreRecovery();
             });
         }),

@@ -23,7 +23,7 @@ import { buildComposition, patchPathsFromArgs, profileNameFromArgs } from "./rec
 import { RecoveryDiagnostics } from "./recovery/diagnostics";
 import { FixExecutor } from "./recovery/fixExecutor";
 import { HealthOracle } from "./recovery/healthOracle";
-import { RecoveryLedgerStore } from "./recovery/ledger";
+import { RecoveryLedgerCorruptError, RecoveryLedgerStore } from "./recovery/ledger";
 import { RecoverySession } from "./recovery/recoverySession";
 import { SandboxManager } from "./recovery/sandbox";
 import type {
@@ -1208,6 +1208,12 @@ export class DshRuntime implements vscode.Disposable {
 
     public async restoreRecovery(): Promise<string[]> {
         if (this.child || this.baseUrl) {
+            throw new Error(t("Stop dsh Runtime before restoring automatic recovery changes."));
+        }
+        // Command discovery keeps `startPromise` live while `child`/`baseUrl` are still
+        // unset, and an automatic recovery can be mid-flight; restoring then would race
+        // those paths over the ledger and the profile manifest.
+        if (this.startPromise || this.stopPromise || this.automaticRecoveryInFlight) {
             throw new Error(t("Stop dsh Runtime before restoring automatic recovery changes."));
         }
         const restored = await this.recoveryFixes.restore();
@@ -2505,7 +2511,14 @@ export class DshRuntime implements vscode.Disposable {
             // occupied by another service or Runtime.
             args.push("--port", String(configuredPort > 0 ? configuredPort : 0));
         }
-        args = await this.recoveryFixes.filterLaunchArgs(args);
+        try {
+            args = await this.recoveryFixes.filterLaunchArgs(args);
+        } catch (error) {
+            if (!(error instanceof RecoveryLedgerCorruptError)) throw error;
+            // A damaged ledger.json blocks applied-fix filtering only; design 11.3 keeps the
+            // original file and continues in diagnostic mode, so start with the unfiltered args.
+            this.output.appendLine(`[dsh:recovery] ignoring damaged recovery ledger: ${error.message}`);
+        }
         try {
             const patchPaths = patchPathsFromArgs(args);
             const compactionPatchPath = this.compactionPatchPath;
@@ -3262,6 +3275,9 @@ export class DshRuntime implements vscode.Disposable {
 
     /** Cancel automatic recovery when an explicit lifecycle action takes over. */
     private cancelRuntimeRecovery(): void {
+        // Abort the in-flight session too: otherwise recover() still resolves as
+        // retry/candidate and restarts the Runtime, undoing the user's stop.
+        this.recoverySession.cancel();
         ++this.runtimeRecoveryGeneration;
         if (this.runtimeRecoveryTimer !== undefined) {
             clearTimeout(this.runtimeRecoveryTimer);

@@ -13,14 +13,19 @@ export function StatusBanner({ status, sessionStatus }: StatusBannerState): Reac
     const message = sessionError || runtimeError;
     const messageKey = message
         ? `${sessionError ? "session" : "runtime"}:${message}:${recovery?.phase ?? ""}`
-        : undefined;
+        : recovery?.sessionId
+            ? `recovery:${recovery.sessionId}:${recovery.phase}`
+            : undefined;
     const [dismissedKey, setDismissedKey] = useState<string>();
 
     useEffect(() => {
         setDismissedKey(undefined);
     }, [messageKey]);
 
-    if (!recovering && !recovered && (!message || messageKey === dismissedKey)) return null;
+    // `recovering` keeps its banner because it carries the cancel action; the
+    // informational `recovered` banner must be dismissable (design 13.1).
+    if (!recovering && messageKey !== undefined && messageKey === dismissedKey) return null;
+    if (!recovering && !recovered && !message) return null;
 
     const terminalRecovery = recovery?.phase === "unrecoverable" || recovery?.phase === "cancelled";
     const isSessionError = Boolean(sessionError);
@@ -57,6 +62,11 @@ export function StatusBanner({ status, sessionStatus }: StatusBannerState): Reac
                             <button type="button" className="dsh-button dsh-button-secondary"
                                 onClick={() => postAction({ type: "exportRecoveryDiagnostics" })}>
                                 {t("Export diagnostics")}
+                            </button>
+                            <button type="button" className="dsh-icon-button"
+                                aria-label={t("Dismiss")} title={t("Dismiss")}
+                                onClick={() => setDismissedKey(messageKey)}>
+                                <CloseIcon />
                             </button>
                         </>
                     ) : (
