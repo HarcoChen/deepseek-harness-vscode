@@ -70,7 +70,13 @@ if (process.env.RECOVERY_VERIFY_MODE === "transient" &&
   process.exit(17);
 }
 
-if (bundles().includes("@fixture/bad")) {
+const selected = bundles();
+if (process.env.RECOVERY_VERIFY_MODE === "interaction") {
+  if (selected.includes("@fixture/good") && selected.includes("@fixture/bad")) {
+    console.error("interaction failure");
+    process.exit(29);
+  }
+} else if (selected.includes("@fixture/bad")) {
   console.error("bad bundle activated");
   process.exit(23);
 }
@@ -214,6 +220,19 @@ server.listen(0, "127.0.0.1", () => {
     assert.equal(corruptRun.outcome.sessionId, "ledger-corrupt");
     assert.equal(await readFile(corruptLedger.path, "utf8"), "{not-json");
     console.log("PASS ledger-corrupt: original ledger preserved and no sandbox fix applied");
+
+    const interactionFixture = await makeFixture("interaction", ["@fixture/good", "@fixture/bad"]);
+    const interactionRun = await runSession(interactionFixture, fixturePath, "interaction");
+    assert.equal(interactionRun.outcome.status, "unrecoverable",
+        "a non-monotonic failure must not be persisted as a bundle fix");
+    assert.equal(interactionRun.outcome.fix, undefined);
+    const interactionManifest = JSON.parse(await readFile(join(interactionFixture.profile, "package.json"), "utf8"));
+    assert.deepEqual(interactionManifest.dsh.profile.bundles, ["@fixture/good", "@fixture/bad"],
+        "the profile manifest must stay untouched when the re-add confirmation is healthy");
+    const interactionLedger = await interactionRun.ledger.read();
+    assert.ok(interactionLedger.state.sessions.every(session => session.budget.skipped.length > 0),
+        "duplicate variants dropped by the planner must be recorded in budget.skipped");
+    console.log("PASS interaction-rejected: healthy re-add blocks an unfounded bundle fix");
 
     await sleep(50);
 }

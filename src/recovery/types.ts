@@ -135,6 +135,7 @@ export type VariantKind =
     | "v3-all-user-bundles-removed"
     | "v3-bundle-half-added"
     | "v3-bundle-singleton"
+    | "v3-confirm-culprit"
     | "v4-extension-overlays-removed";
 
 export interface RestoreInstruction {

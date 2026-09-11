@@ -129,7 +129,7 @@ export class VariantEngine {
         const seen = new Set<string>();
         const add = (variant: CompositionVariant): void => {
             if (seen.has(variant.composition.compositionHash)) {
-                variant = { ...variant, id: `${variant.id}-duplicate` };
+                budget.skipped.push({ variantId: variant.id, reason: "duplicate" });
                 return;
             }
             seen.add(variant.composition.compositionHash);
@@ -195,7 +195,28 @@ export class VariantEngine {
                 add(variant);
             }
         }
-        return variants.slice(0, Math.max(1, budget.maxBoots));
+        const limit = Math.max(1, budget.maxBoots);
+        for (const dropped of variants.slice(limit)) {
+            budget.skipped.push({ variantId: dropped.id, reason: "budget" });
+        }
+        return variants.slice(0, limit);
+    }
+
+    /**
+     * Design 7.3 step 5: the confirmation is two-directional. Removing the candidate
+     * set must pass (the healthy variant the caller already found), and re-adding
+     * *only* the candidate set must fail. This builds the second direction.
+     */
+    public readdConfirmation(
+        base: CompositionDescriptor,
+        targetIds: readonly string[],
+    ): CompositionVariant {
+        return bundleVariant(
+            base,
+            "v3-confirm-culprit",
+            targetIds,
+            `Re-add only the candidate bundle set (${targetIds.join(", ")}) to confirm it is the culprit.`,
+        );
     }
 
     public explain(

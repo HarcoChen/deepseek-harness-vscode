@@ -6,12 +6,19 @@ import type {
     Attribution,
     CandidateFix,
     CompositionDescriptor,
+    FailureClass,
     RecoveryBudget,
     RecoveryOutcome,
     RecoveryStatusView,
 } from "./types";
 
 const SAFE_MAX_BOOTS = 8;
+
+/**
+ * Environment/launcher failures that design 7.2 says must terminate the search
+ * instead of being attributed to a user bundle.
+ */
+const TERMINAL_FAILURE_CLASSES = new Set<FailureClass>(["auth", "sandbox-build", "launcher"]);
 
 export interface RecoverySessionOptions {
     maxBoots?: number;
@@ -173,6 +180,9 @@ export class RecoverySession {
         signal: AbortSignal,
     ): Promise<RecoveryOutcome> {
         const budget = this.createBudget();
+        // Plan before beginSession: the ledger stores a clone of the budget it is given,
+        // so the planner's skipped-variant accounting must be complete by then to persist.
+        const variants = this.variants.plan(composition, budget);
         try {
             await this.options.ledger.acquireLease();
         } catch (error) {
@@ -213,7 +223,6 @@ export class RecoverySession {
             summary: failureMessage,
             canRestore: false,
         });
-        const variants = this.variants.plan(composition, budget);
         const evidence: import("./types").HealthEvidence[] = [];
         for (const variant of variants) {
             if (signal.aborted) return this.cancelled(session.id);
@@ -246,6 +255,16 @@ export class RecoverySession {
                 return this.unrecoverable(
                     session.id,
                     "Recovery stopped because process or sandbox cleanup could not be verified.",
+                );
+            }
+            // Design 7.2: an auth / URL / version / sandbox-build failure is an environment
+            // problem, not a user bundle. Terminate rather than search, so an environment
+            // error can never be misattributed to a bundle and persisted as a profile fix.
+            if (variant.kind === "v1-reproduce" && TERMINAL_FAILURE_CLASSES.has(result.failureClass)) {
+                return this.unrecoverable(
+                    session.id,
+                    `Recovery stopped: the original composition failed as ${result.failureClass}, ` +
+                    "which is an environment or launcher problem rather than a user bundle.",
                 );
             }
             if (variant.kind === "v1-reproduce" && result.verdict !== "healthy" && evidence.length < this.maxBoots) {
@@ -287,14 +306,33 @@ export class RecoverySession {
             const candidate = variant.candidateFix;
             if (!candidate) continue;
             if (candidate.kind === "disable-profile-bundles") {
+                // Design 7.3 step 5 requires both directions: removing the candidate set
+                // passes (the healthy variant found above) and re-adding *only* the
+                // candidate set fails with a compatible failure class. Without the re-add
+                // direction the monotonicity assumption is never falsified, and persisting
+                // the fix would edit the user's profile on an unfounded attribution.
+                const readd = this.variants.readdConfirmation(composition, candidate.targetIds);
                 const confirmation = await this.options.oracle.evaluate(
-                    composition,
-                    { ...variant, id: `${variant.id}-confirm` },
+                    readd.composition,
+                    readd,
                     { sessionId: session.id, signal },
                 );
                 evidence.push(confirmation);
                 await this.options.ledger.appendEvidence(session.id, confirmation);
-                if (confirmation.cleanup.deferredCleanup || confirmation.verdict !== "healthy") continue;
+                if (confirmation.cleanup.deferredCleanup) continue;
+                const original = evidence.find((item) => item.verdict !== "healthy");
+                if (confirmation.verdict === "healthy") {
+                    this.options.onLog?.(
+                        `Candidate ${candidate.targetIds.join(", ")} stayed healthy when re-added; the attribution is not confirmed.`,
+                    );
+                    continue;
+                }
+                if (original && confirmation.failureClass !== original.failureClass) {
+                    this.options.onLog?.(
+                        `Re-add confirmation failed as ${confirmation.failureClass}, incompatible with the original ${original.failureClass}; the attribution is not confirmed.`,
+                    );
+                    continue;
+                }
             }
             if (
                 candidate.kind === "disable-profile-bundles" &&
@@ -371,7 +409,11 @@ export class RecoverySession {
     }
 
     private async unrecoverable(sessionId: string, message: string): Promise<RecoveryOutcome> {
-        if (sessionId !== "ledger-unavailable" && sessionId !== "composition-unavailable") {
+        if (
+            sessionId !== "ledger-unavailable" &&
+            sessionId !== "composition-unavailable" &&
+            sessionId !== "recovery-busy"
+        ) {
             try {
                 await this.options.ledger.finishSession(sessionId, "unrecoverable", {
                     attribution: this.attribution,

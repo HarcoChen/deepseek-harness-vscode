@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { mutateRuntimeLock, processHasExited, readRuntimeLock, removeRuntimeLock } from "../runtimeLock";
-import { diagnosticValue } from "./diagnostics";
 import type {
     CandidateFix,
     CompositionDescriptor,
@@ -86,6 +85,9 @@ export class RecoveryLedgerStore {
         await mkdir(this.directory, { recursive: true });
         await mutateRuntimeLock(this.leasePath, async () => {
             const current = await readRuntimeLock(this.leasePath);
+            // This window may already own the lease (a recovery session can retain it
+            // while a restore is requested); re-acquiring must not look like contention.
+            if (current?.record?.ownerId !== undefined && current.record.ownerId === this.leaseOwner) return;
             if (current) {
                 if (!current.record || !processHasExited(current.record.pid) || !await removeRuntimeLock(current)) {
                     throw new Error("Another recovery or restore owns the recovery lease; retry after it finishes.");
@@ -322,7 +324,7 @@ export class RecoveryLedgerStore {
     }
 
     private async writeUnlocked(state: RecoveryLedgerState): Promise<void> {
-        await atomicWrite(this.path, `${JSON.stringify(diagnosticValue(state), null, 2)}\n`);
+        await atomicWrite(this.path, `${JSON.stringify(state, null, 2)}\n`);
     }
 
     private async withMutation<T>(action: () => Promise<T>): Promise<T> {

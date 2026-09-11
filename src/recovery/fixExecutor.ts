@@ -19,9 +19,13 @@ function pathKey(path: string): string {
 }
 
 export class FixConflictError extends Error {
-    public constructor(message: string) {
+    /** Entries that were already reverted before this conflict was detected. */
+    public readonly restored: readonly string[];
+
+    public constructor(message: string, restored: readonly string[] = []) {
         super(message);
         this.name = "FixConflictError";
+        this.restored = restored;
     }
 }
 
@@ -133,6 +137,7 @@ export class FixExecutor {
             const entries = (await this.ledger.readEntries()).filter(entry =>
                 entry.status === "applied" || entry.status === "verified");
             const restored: string[] = [];
+            const conflicts: string[] = [];
             for (const entry of [...entries].reverse()) {
                 if (entry.fix.kind === "remove-extension-overlay") {
                     await this.ledger.restoreEntry(entry.id);
@@ -142,15 +147,20 @@ export class FixExecutor {
                 const backup = await this.readBackup(entry);
                 const current = await readFile(backup.target, "utf8");
                 if (sha256(current) !== backup.afterHash) {
-                    await this.ledger.restoreEntry(entry.id, "conflicted",
-                        `Profile manifest changed after recovery: ${backup.target}`);
-                    throw new FixConflictError(`Profile manifest changed after recovery: ${backup.target}`);
+                    const message = `Profile manifest changed after recovery: ${backup.target}`;
+                    await this.ledger.restoreEntry(entry.id, "conflicted", message);
+                    conflicts.push(message);
+                    continue;
                 }
                 await assertRegularFile(backup.target);
                 await atomicWrite(backup.target, backup.original);
                 await this.ledger.restoreEntry(entry.id);
                 restored.push(entry.id);
             }
+            // Entries are processed in reverse, so bailing out on the first conflict would
+            // leave a partial restore that the caller never hears about. Report the whole
+            // outcome instead, carrying the list of entries that were actually reverted.
+            if (conflicts.length) throw new FixConflictError(conflicts.join("; "), restored);
             return restored;
         } finally {
             await this.ledger.releaseLease().catch(() => undefined);
