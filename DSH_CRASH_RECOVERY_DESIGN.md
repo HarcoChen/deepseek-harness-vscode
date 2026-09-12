@@ -521,6 +521,7 @@ export interface RecoveryLedger {
 2. 对源目录下每个一级 package entry，读取 link 目标但不递归复制整个包。
 3. Windows 使用 junction 或文件 symlink 的逐项重建，POSIX 使用 symlink；目标包目录保持源安装目录，link 本身属于沙箱。
 4. `.dsh-module-fallback/node_modules` 和 profile `node_modules` 分别物化，不能共同指向真实父目录。
+   > **实现修正（2026-09-12，回应 PR #19 审查意见 F8）**：v1 实现把整个 home 用 `$DSH_HOME` 整体重定向进沙箱（`dsh-home-paths` 的 `resolveDshHome()` 以 `$DSH_HOME` 为最高优先级，非空白即生效；`DSH_HOME`/`HOME`/`USERPROFILE` 三者全部指向沙箱 home），因此 `healProfilesModuleFallback` 与 `healProfileModuleFallback` 里 `join(home, …)` / `join(profile.dir, …)` 的父目录**按构造就在沙箱内**，两个 fallback 目录即使不预物化也不会落到真实 home——invariant 不依赖预物化成立。已用实测探针确认真实 home 零改动。预物化规则保留为「若未来改用部分重定向」时的强制要求。
 5. DSH 启动的 `healProfilesModuleFallback` 因此只会在沙箱父目录中创建、替换、删除 link/proxy；它仍能读取真实安装包代码，但不能改变源目录的 link 拓扑。[F13][DSH_CRASH_RECOVERY_SOURCE_REVIEW.md 第 4 节]
 6. 若发现源目录是普通目录而不是可安全映射的包 entry，按 package 粒度复制该 entry 或返回 `sandbox-error`；绝不退化为整个目录 junction。
 7. Oracle 结束后先终止 DSH，再删除 sandbox；若 Windows 文件占用导致删除失败，先清理秘密文件，登记 `pendingCleanup`，不继续下一变体。
