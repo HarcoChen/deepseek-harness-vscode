@@ -7,6 +7,7 @@ import type {
     CandidateFix,
     CompositionDescriptor,
     FailureClass,
+    HealthVerdict,
     RecoveryBudget,
     RecoveryOutcome,
     RecoveryStatusView,
@@ -19,6 +20,13 @@ const SAFE_MAX_BOOTS = 8;
  * instead of being attributed to a user bundle.
  */
 const TERMINAL_FAILURE_CLASSES = new Set<FailureClass>(["auth", "sandbox-build", "launcher"]);
+
+/**
+ * Probe outcomes that prove nothing about the composition: the boot was cancelled,
+ * timed out, or the sandbox itself failed. They must not be read as either direction
+ * of a two-way confirmation.
+ */
+const INCONCLUSIVE_VERDICTS = new Set<HealthVerdict>(["cancelled", "timeout", "sandbox-error"]);
 
 export interface RecoverySessionOptions {
     maxBoots?: number;
@@ -320,6 +328,15 @@ export class RecoverySession {
                 evidence.push(confirmation);
                 await this.options.ledger.appendEvidence(session.id, confirmation);
                 if (confirmation.cleanup.deferredCleanup) continue;
+                // An inconclusive probe must never count as the "re-add fails" direction:
+                // a cancelled/timed-out/sandbox-failed boot is not evidence that the bundle
+                // is the culprit, and treating it as one would confirm an unfounded attribution.
+                if (INCONCLUSIVE_VERDICTS.has(confirmation.verdict)) {
+                    this.options.onLog?.(
+                        `Re-add confirmation for ${candidate.targetIds.join(", ")} was inconclusive; the attribution is not confirmed.`,
+                    );
+                    continue;
+                }
                 const original = evidence.find((item) => item.verdict !== "healthy");
                 if (confirmation.verdict === "healthy") {
                     this.options.onLog?.(

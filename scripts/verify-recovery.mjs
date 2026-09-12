@@ -234,5 +234,47 @@ server.listen(0, "127.0.0.1", () => {
         "duplicate variants dropped by the planner must be recorded in budget.skipped");
     console.log("PASS interaction-rejected: healthy re-add blocks an unfounded bundle fix");
 
+    // Restore conflicts (design 16.1): a fix whose backing file drifted after it was applied
+    // must be reported as conflicted, must not be reverted, and must not silently swallow the
+    // entries restored around it.
+    const conflictFixture = await makeFixture("conflict", ["@fixture/good", "@fixture/bad"]);
+    const conflictRun = await runSession(conflictFixture, fixturePath);
+    assert.equal(conflictRun.outcome.status, "candidate", "the bad bundle must still be isolated");
+    const conflictManifestPath = join(conflictFixture.profile, "package.json");
+    // Simulate a user edit landing after the automated fix was applied.
+    const edited = JSON.parse(await readFile(conflictManifestPath, "utf8"));
+    edited.dsh.profile.bundles = ["@fixture/good", "@fixture/bad", "@fixture/later-addition"];
+    await writeFile(conflictManifestPath, `${JSON.stringify(edited, null, 2)}\n`, "utf8");
+    const conflictError = await conflictRun.fixes.restore().then(() => undefined, error => error);
+    assert.ok(conflictError, "a drifted manifest must surface a restore conflict");
+    assert.deepEqual(conflictError.restored, [], "nothing may be reported as restored when the target drifted");
+    const afterConflict = JSON.parse(await readFile(conflictManifestPath, "utf8"));
+    assert.deepEqual(afterConflict.dsh.profile.bundles, ["@fixture/good", "@fixture/bad", "@fixture/later-addition"],
+        "a conflicted restore must leave the user's newer file untouched");
+    const conflictLedger = await conflictRun.ledger.read();
+    const conflictedEntry = conflictLedger.state.entries.find(entry => entry.id === conflictRun.outcome.fix.id);
+    assert.equal(conflictedEntry.status, "conflicted", "the entry must be recorded, not left as applied");
+    console.log("PASS restore-conflict: drifted manifest blocks the revert and is recorded");
+
+    // Restore with an unreadable backup (design 16.1 "restore-conflict"): a missing backup must
+    // be reported as a conflict for THAT entry while every other entry is still attempted and
+    // still accounted for. An escaping throw would strand the rest with no record.
+    const missingFixture = await makeFixture("missing-backup", ["@fixture/good", "@fixture/bad"]);
+    const missingRun = await runSession(missingFixture, fixturePath);
+    assert.equal(missingRun.outcome.status, "candidate", "the bad bundle must be isolated first");
+    const backupFile = join(missingRun.ledger.directory, "backups", `${missingRun.outcome.fix.id}.json`);
+    await rm(backupFile, { force: true });
+    const missingError = await missingRun.fixes.restore().then(() => undefined, error => error);
+    assert.ok(missingError, "an unreadable backup must surface a restore conflict");
+    const missingLedger = await missingRun.ledger.read();
+    const stranded = missingLedger.state.entries.find(entry => entry.id === missingRun.outcome.fix.id);
+    assert.equal(stranded.status, "conflicted",
+        "an entry whose backup cannot be read must be marked conflicted, not left as applied");
+    assert.ok(String(missingError.message).includes("backup"),
+        "the conflict must name the unavailable backup so the user can diagnose it");
+    assert.deepEqual(missingError.restored, [],
+        "an entry with no readable backup must not be reported as restored");
+    console.log("PASS restore-missing-backup: unreadable backup is recorded as a conflict");
+
     await sleep(50);
 }

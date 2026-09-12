@@ -333,13 +333,37 @@ export class RecoveryLedgerStore {
     }
 }
 
+/** Bounded retry budget for a Windows sharing violation on the atomic rename. */
+const ATOMIC_WRITE_RETRIES = 5;
+const ATOMIC_WRITE_RETRY_MS = 50;
+const RETRYABLE_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+
 export async function atomicWrite(path: string, contents: string): Promise<void> {
     await mkdir(dirname(path), { recursive: true });
     const temporary = `${path}.${randomUUID()}.tmp`;
     try {
         await writeFile(temporary, contents, { encoding: "utf8", flag: "wx", mode: 0o600 });
-        await rename(temporary, path);
+        await renameWithRetry(temporary, path);
     } finally {
         await rm(temporary, { force: true });
+    }
+}
+
+/**
+ * `rename` is atomic, but on Windows it fails with EPERM/EACCES/EBUSY while another
+ * process holds the destination open (an editor, an indexer, a concurrent reader).
+ * Those are transient sharing violations, not corruption: retry briefly before failing
+ * closed, so a momentary lock cannot be reported as a broken ledger.
+ */
+async function renameWithRetry(source: string, target: string): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+        try {
+            await rename(source, target);
+            return;
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code ?? "";
+            if (attempt >= ATOMIC_WRITE_RETRIES || !RETRYABLE_RENAME_CODES.has(code)) throw error;
+            await new Promise((resolve) => { setTimeout(resolve, ATOMIC_WRITE_RETRY_MS); });
+        }
     }
 }

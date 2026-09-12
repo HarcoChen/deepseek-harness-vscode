@@ -144,7 +144,19 @@ export class FixExecutor {
                     restored.push(entry.id);
                     continue;
                 }
-                const backup = await this.readBackup(entry);
+                // The backup read is part of the per-entry attempt: if it throws (missing or
+                // corrupt backup) the entry must still be recorded as conflicted and the
+                // remaining entries must still be attempted. Letting the throw escape here
+                // would strand every earlier entry as "applied" with no record of why.
+                let backup: Backup;
+                try {
+                    backup = await this.readBackup(entry);
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    await this.ledger.restoreEntry(entry.id, "conflicted", message);
+                    conflicts.push(message);
+                    continue;
+                }
                 const current = await readFile(backup.target, "utf8");
                 if (sha256(current) !== backup.afterHash) {
                     const message = `Profile manifest changed after recovery: ${backup.target}`;
