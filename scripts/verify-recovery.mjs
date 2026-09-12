@@ -41,7 +41,7 @@ if (!process.argv.includes("--worker")) {
         buildComposition,
     } = require(join(resolve(dirname(script), ".."), "dist/recovery/composition"));
     const { RecoveryDiagnostics } = require(join(resolve(dirname(script), ".."), "dist/recovery/diagnostics"));
-    const { FixExecutor } = require(join(resolve(dirname(script), ".."), "dist/recovery/fixExecutor"));
+    const { FixConflictError, FixExecutor } = require(join(resolve(dirname(script), ".."), "dist/recovery/fixExecutor"));
     const { HealthOracle } = require(join(resolve(dirname(script), ".."), "dist/recovery/healthOracle"));
     const { RecoveryLedgerStore } = require(join(resolve(dirname(script), ".."), "dist/recovery/ledger"));
     const { RecoverySession } = require(join(resolve(dirname(script), ".."), "dist/recovery/recoverySession"));
@@ -275,6 +275,28 @@ server.listen(0, "127.0.0.1", () => {
     assert.deepEqual(missingError.restored, [],
         "an entry with no readable backup must not be reported as restored");
     console.log("PASS restore-missing-backup: unreadable backup is recorded as a conflict");
+
+    // Restore when the TARGET manifest itself is gone (design 16.1 "restore-conflict"): the
+    // user deleted or renamed the profile manifest after the automated fix landed. Reading the
+    // target is part of the per-entry attempt, so this must be recorded as a conflict for THAT
+    // entry and the remaining entries must still be reverted — an escaping ENOENT would strand
+    // every earlier entry as "applied" and hide the ones that did come back.
+    const targetFixture = await makeFixture("missing-target", ["@fixture/good", "@fixture/bad"]);
+    const targetRun = await runSession(targetFixture, fixturePath);
+    assert.equal(targetRun.outcome.status, "candidate", "the bad bundle must be isolated first");
+    const targetManifest = join(targetFixture.profile, "package.json");
+    await rm(targetManifest, { force: true });
+    const targetError = await targetRun.fixes.restore().then(() => undefined, error => error);
+    assert.ok(targetError, "a missing target manifest must surface a restore conflict");
+    assert.ok(targetError instanceof FixConflictError,
+        "the conflict must be reported as a recovery conflict, not a raw filesystem error");
+    const targetLedger = await targetRun.ledger.read();
+    const targetEntry = targetLedger.state.entries.find(entry => entry.id === targetRun.outcome.fix.id);
+    assert.equal(targetEntry.status, "conflicted",
+        "an entry whose target manifest is gone must be marked conflicted, not left as applied");
+    assert.deepEqual(targetError.restored, [],
+        "an entry whose target is gone must not be reported as restored");
+    console.log("PASS restore-missing-target: deleted manifest is recorded as a conflict");
 
     await sleep(50);
 }

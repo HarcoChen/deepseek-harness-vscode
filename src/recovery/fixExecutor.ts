@@ -144,30 +144,29 @@ export class FixExecutor {
                     restored.push(entry.id);
                     continue;
                 }
-                // The backup read is part of the per-entry attempt: if it throws (missing or
-                // corrupt backup) the entry must still be recorded as conflicted and the
-                // remaining entries must still be attempted. Letting the throw escape here
-                // would strand every earlier entry as "applied" with no record of why.
-                let backup: Backup;
+                // The whole revert is the per-entry attempt, not just the backup read: every
+                // step after this point touches the user's file (read the target, check it is a
+                // regular file, write it back, record the ledger transition). If any of them
+                // throws — a deleted/renamed manifest, a backup that cannot be read, a target
+                // replaced by a symlink — the entry must still be recorded as conflicted and the
+                // remaining entries must still be attempted. Letting a throw escape would strand
+                // every earlier entry as "applied" with no record of why, and would hide the
+                // entries that were already reverted.
                 try {
-                    backup = await this.readBackup(entry);
+                    const backup = await this.readBackup(entry);
+                    const current = await readFile(backup.target, "utf8");
+                    if (sha256(current) !== backup.afterHash) {
+                        throw new FixConflictError(`Profile manifest changed after recovery: ${backup.target}`);
+                    }
+                    await assertRegularFile(backup.target);
+                    await atomicWrite(backup.target, backup.original);
+                    await this.ledger.restoreEntry(entry.id);
+                    restored.push(entry.id);
                 } catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
                     await this.ledger.restoreEntry(entry.id, "conflicted", message);
                     conflicts.push(message);
-                    continue;
                 }
-                const current = await readFile(backup.target, "utf8");
-                if (sha256(current) !== backup.afterHash) {
-                    const message = `Profile manifest changed after recovery: ${backup.target}`;
-                    await this.ledger.restoreEntry(entry.id, "conflicted", message);
-                    conflicts.push(message);
-                    continue;
-                }
-                await assertRegularFile(backup.target);
-                await atomicWrite(backup.target, backup.original);
-                await this.ledger.restoreEntry(entry.id);
-                restored.push(entry.id);
             }
             // Entries are processed in reverse, so bailing out on the first conflict would
             // leave a partial restore that the caller never hears about. Report the whole
