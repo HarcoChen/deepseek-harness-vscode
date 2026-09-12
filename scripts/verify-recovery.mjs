@@ -71,6 +71,25 @@ if (process.env.RECOVERY_VERIFY_MODE === "transient" &&
 }
 
 const selected = bundles();
+// Only the fully-removed baseline is always healthy; the [good]-only set boots ONCE (so the
+// search finds a healthy candidate and apply() writes) and fails on the next boot, which is
+// what the post-write sandbox re-verification must catch. Any set still holding @fixture/bad
+// always fails, so the fix is genuinely attributable to that bundle.
+if (process.env.RECOVERY_VERIFY_MODE === "rollback") {
+  if (selected.includes("@fixture/bad")) {
+    console.error("rollback fixture: @fixture/bad is unbootable");
+    process.exit(31);
+  }
+  if (selected.length > 0) {
+    const stamp = process.env.RECOVERY_VERIFY_MARKER + ".once";
+    if (fs.existsSync(stamp)) {
+      console.error("rollback fixture: the written manifest does not boot");
+      process.exit(32);
+    }
+    fs.writeFileSync(stamp, "booted-once");
+  }
+}
+
 if (process.env.RECOVERY_VERIFY_MODE === "interaction") {
   if (selected.includes("@fixture/good") && selected.includes("@fixture/bad")) {
     console.error("interaction failure");
@@ -234,6 +253,25 @@ server.listen(0, "127.0.0.1", () => {
         "duplicate variants dropped by the planner must be recorded in budget.skipped");
     console.log("PASS interaction-rejected: healthy re-add blocks an unfounded bundle fix");
 
+    // Write-time sandbox re-verification (design 794-795): a fix is only persisted after the
+    // CHANGED manifest has been proven bootable. Here the removed bundle turns out to be
+    // load-bearing for the remaining set, so the post-fix composition still fails. The fix must
+    // be rolled back immediately instead of leaving the user's profile broken for a real start.
+    const rollbackFixture = await makeFixture("rollback", ["@fixture/good", "@fixture/bad"]);
+    const rollbackRun = await runSession(rollbackFixture, fixturePath, "rollback");
+    assert.notEqual(rollbackRun.outcome.status, "candidate",
+        "a fix whose post-write manifest does not boot must never be handed back as a candidate");
+    const rollbackManifest = JSON.parse(await readFile(join(rollbackFixture.profile, "package.json"), "utf8"));
+    assert.deepEqual(rollbackManifest.dsh.profile.bundles, ["@fixture/good", "@fixture/bad"],
+        "a rejected fix must leave the user's original manifest bytes intact");
+    // The rolled-back entry must be accounted for, not left dangling as an applied fix that a
+    // later restore would try to revert against a manifest that never actually changed.
+    const rollbackLedger = await rollbackRun.ledger.read();
+    assert.equal(rollbackLedger.state.clean, true,
+        "a rolled-back fix must leave the ledger with no unfinished session");
+    assert.ok(rollbackLedger.state.entries.every(entry => entry.status !== "applied"),
+        "an unverified fix must never be recorded as applied");
+    console.log("PASS write-time-verify-rollback: an unbootable manifest is rolled back, not persisted");
     // Restore conflicts (design 16.1): a fix whose backing file drifted after it was applied
     // must be reported as conflicted, must not be reverted, and must not silently swallow the
     // entries restored around it.

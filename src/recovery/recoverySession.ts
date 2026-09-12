@@ -6,7 +6,9 @@ import type {
     Attribution,
     CandidateFix,
     CompositionDescriptor,
+    CompositionVariant,
     FailureClass,
+    HealthEvidence,
     HealthVerdict,
     RecoveryBudget,
     RecoveryOutcome,
@@ -366,7 +368,23 @@ export class RecoverySession {
             try {
                 await this.options.ledger.planFix(session.id, fix, composition.compositionHash);
                 const changed = await this.options.fixes.apply(fix, composition);
+                // Design 794-795: before handing the real manifest back to a real start,
+                // re-verify in the sandbox that the file we just wrote actually boots. Without
+                // this, a bad write is only discovered by a real boot, and that failure path
+                // marks the session unrecoverable without ever restoring the original file —
+                // leaving the user's profile broken until they run restore by hand.
+                // The file has already been written, so record it as applied BEFORE verifying:
+                // restore() only reverts entries in the applied/verified state, and marking it
+                // after verification would leave a rejected fix as `planned` and therefore
+                // unrevertable — the write would silently survive the rollback.
                 await this.options.ledger.markFixApplied(session.id, fix.id, changed.compositionHash);
+                const verified = await this.verifyAppliedFix(fix, changed);
+                if (!verified.ok) {
+                    await this.options.fixes.restore();
+                    await this.options.ledger.markFixConflict(session.id, fix.id, verified.reason);
+                    this.options.onLog?.(`Recovery fix was rolled back: ${verified.reason}`);
+                    continue;
+                }
                 this.publish({
                     sessionId: session.id,
                     phase: "fix-applied",
@@ -456,6 +474,33 @@ export class RecoverySession {
         };
     }
 
+    /**
+     * Design 794-795: after `apply` rewrites the real profile manifest, boot the changed
+     * composition in the sandbox before any real start. A failure here means the write we just
+     * made is not bootable, so the caller rolls it back instead of leaving the user's profile
+     * broken. Returns a reason rather than throwing so the caller keeps the ledger in charge.
+     */
+    private async verifyAppliedFix(
+        fix: CandidateFix,
+        changed: CompositionDescriptor,
+    ): Promise<{ ok: true; } | { ok: false; reason: string; }> {
+        const variant: CompositionVariant = {
+            id: `${fix.id}-verify`,
+            kind: "v3-bundle-singleton",
+            parentHash: changed.compositionHash,
+            assumption: "Re-verify the profile manifest written by this fix in the sandbox.",
+            bundleSelection: changed.bundles.filter((bundle) => bundle.selected).map((bundle) => bundle.packageName),
+            composition: changed,
+        };
+        const canary = await this.options.oracle.evaluate(changed, variant, { sessionId: this.status?.sessionId ?? "" });
+        if (canary.cleanup.deferredCleanup) {
+            return { ok: false, reason: "Sandbox cleanup could not be verified after writing the profile manifest." };
+        }
+        if (canary.verdict !== "healthy") {
+            return { ok: false, reason: `The manifest written by this fix does not boot: ${canary.failureClass ?? "unknown failure"}.` };
+        }
+        return { ok: true };
+    }
     private publish(status: RecoveryStatusView): void {
         this.status = { ...status };
         this.options.onStatus?.({ ...status });
