@@ -1207,6 +1207,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                 case "openLogs":
                     this.output.show(true);
                     break;
+                case "cancelRecovery":
+                    this.runtime.cancelRecovery();
+                    break;
+                case "exportRecoveryDiagnostics": {
+                    const path = await this.runtime.exportRecoveryDiagnostics();
+                    await vscode.env.clipboard.writeText(path);
+                    void vscode.window.showInformationMessage(t("DSH recovery diagnostics exported to {path}.", { path }));
+                    break;
+                }
+                case "restoreRecovery": {
+                    const restored = await this.runtime.restoreRecovery();
+                    if (restored.length) {
+                        void vscode.window.showInformationMessage(t("DSH recovery changes restored."));
+                    }
+                    break;
+                }
                 case "openBrowser":
                     await this.openBrowser();
                     break;

@@ -1,3 +1,5 @@
+import type { RecoveryStatusView } from "./recovery/types";
+
 export type DshContextKind =
     | "selection"
     | "file"
@@ -260,12 +262,13 @@ export interface ChatMessageFeedbackView {
     error?: string;
 }
 
-export type RuntimeState = "stopped" | "starting" | "running" | "error";
+export type RuntimeState = "stopped" | "starting" | "running" | "recovering" | "error";
 
 export interface RuntimeStatus {
     state: RuntimeState;
     url?: string;
     message?: string;
+    recovery?: RecoveryStatusView;
 }
 
 export interface DshRpcError {

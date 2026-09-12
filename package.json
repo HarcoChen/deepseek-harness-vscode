@@ -93,7 +93,11 @@
         "onCommand:dsh.refreshBalance",
         "onCommand:dsh.diagnoseEnvironment",
         "onCommand:dsh.openLogs",
-        "onCommand:dsh.openInBrowser"
+        "onCommand:dsh.openInBrowser",
+        "onCommand:dsh.recovery.cancel",
+        "onCommand:dsh.recovery.openDiagnostics",
+        "onCommand:dsh.recovery.exportDiagnostics",
+        "onCommand:dsh.recovery.restore"
     ],
     "contributes": {
         "chatParticipants": [
@@ -213,6 +217,30 @@
                 "title": "%command.openLogs.title%",
                 "category": "DSH",
                 "icon": "$(output)"
+            },
+            {
+                "command": "dsh.recovery.cancel",
+                "title": "%command.recovery.cancel.title%",
+                "category": "DSH",
+                "icon": "$(debug-stop)"
+            },
+            {
+                "command": "dsh.recovery.openDiagnostics",
+                "title": "%command.recovery.openDiagnostics.title%",
+                "category": "DSH",
+                "icon": "$(output)"
+            },
+            {
+                "command": "dsh.recovery.exportDiagnostics",
+                "title": "%command.recovery.exportDiagnostics.title%",
+                "category": "DSH",
+                "icon": "$(export)"
+            },
+            {
+                "command": "dsh.recovery.restore",
+                "title": "%command.recovery.restore.title%",
+                "category": "DSH",
+                "icon": "$(discard)"
             },
             {
                 "command": "dsh.openInBrowser",
@@ -525,6 +553,16 @@
                     "default": true,
                     "description": "%config.autoStart.description%"
                 },
+                "dsh.recovery.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "%config.recovery.enabled.description%"
+                },
+                "dsh.recovery.autoPersistBundleIsolation": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "%config.recovery.autoPersistBundleIsolation.description%"
+                },
                 "dsh.installWhenMissing": {
                     "type": "boolean",
                     "default": true,
@@ -625,6 +663,9 @@
         "check:host": "tsc --noEmit -p ./tsconfig.json",
         "check:webview": "tsc --noEmit -p ./webview/tsconfig.json",
         "test": "npm run check:webview && npm run compile && node --test test/*.test.js",
+        "verify:recovery": "node ./scripts/verify-recovery.mjs",
+        "verify:recovery-e2e": "node ./scripts/verify-e2e-recovery.mjs",
+        "verify:adopt": "node ./scripts/verify-adopt.mjs",
         "package": "npm run compile && vsce package",
         "release": "node ./scripts/release.mjs"
     },

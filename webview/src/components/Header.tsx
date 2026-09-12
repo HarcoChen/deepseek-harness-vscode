@@ -92,6 +92,7 @@ export const Header = React.memo(function Header({
     }
     const hasSession = Boolean(sessionId);
     const runtimeRunning = status.state === "running" || status.state === "starting";
+    const recoveryRunning = status.state === "recovering";
 
     const menuItems: MenuItem[] = [
         { key: "rename", label: t("Rename session"), action: { type: "renameSession" }, disabled: !hasSession },
@@ -100,8 +101,8 @@ export const Header = React.memo(function Header({
         { key: "trace", label: t("Open session trace"), action: { type: "openTrace" }, disabled: !hasSession },
         {
             key: "runtime",
-            label: runtimeRunning ? t("Stop runtime") : t("Start runtime"),
-            action: { type: runtimeRunning ? "stop" : "start" },
+            label: recoveryRunning ? t("Cancel automatic recovery") : runtimeRunning ? t("Stop runtime") : t("Start runtime"),
+            action: { type: recoveryRunning ? "cancelRecovery" : runtimeRunning ? "stop" : "start" },
             disabled: status.state === "starting",
             separatorBefore: true,
         },

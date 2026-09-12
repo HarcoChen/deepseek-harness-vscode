@@ -2,8 +2,8 @@ import { ChildProcess, execFile } from "node:child_process";
 import { RuntimeDescendantOwnershipUnknownError, spawnOwnedRuntime, terminateOwnedRuntime, withinShutdownDeadline } from "./runtimeProcess";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { access, open, readFile, unlink, writeFile, type FileHandle } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { access, mkdir, open, readFile, unlink, writeFile, type FileHandle } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, extname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
@@ -19,6 +19,18 @@ import {
 } from "./runtimeLock";
 import { historyEntries as remoteHistoryEntries, projectionBlock as remoteProjectionBlock } from "./remote/sessionState";
 import { t } from "./localize";
+import { buildComposition, patchPathsFromArgs, profileNameFromArgs } from "./recovery/composition";
+import { RecoveryDiagnostics } from "./recovery/diagnostics";
+import { FixExecutor } from "./recovery/fixExecutor";
+import { HealthOracle } from "./recovery/healthOracle";
+import { RecoveryLedgerCorruptError, RecoveryLedgerStore } from "./recovery/ledger";
+import { RecoverySession } from "./recovery/recoverySession";
+import { SandboxManager } from "./recovery/sandbox";
+import type {
+    CompositionDescriptor,
+    RecoveryOutcome,
+    RecoveryStatusView,
+} from "./recovery/types";
 import {
     RUNTIME_DEFAULT_VERSION,
     acquireManagedRuntime,
@@ -92,6 +104,7 @@ import {
     normalizeDynamicPluginStopResult,
 } from "./dynamicPlugins";
 import { normalizePluginInventory } from "./pluginInventory";
+import { samePath } from "./paths";
 
 type RuntimeListener = (status: RuntimeStatus) => void;
 type HarnessConnectedListener = () => void;
@@ -1084,11 +1097,32 @@ export class DshRuntime implements vscode.Disposable {
     private runtimeRecoveryAttempts = 0;
     private runtimeRecoveryGeneration = 0;
     private runtimeRecoveryInFlight = false;
+    private readonly recoveryLedger: RecoveryLedgerStore;
+    private readonly recoveryDiagnostics: RecoveryDiagnostics;
+    private readonly recoveryFixes: FixExecutor;
+    private readonly recoverySession: RecoverySession;
+    private lastRecoveryComposition: CompositionDescriptor | undefined;
+    private automaticRecoveryInFlight = false;
 
     public constructor(
         private readonly output: vscode.OutputChannel,
         private readonly storagePath: string,
     ) {
+        this.recoveryLedger = new RecoveryLedgerStore(storagePath);
+        this.recoveryDiagnostics = new RecoveryDiagnostics(storagePath);
+        this.recoveryFixes = new FixExecutor(this.recoveryLedger, output);
+        this.recoverySession = new RecoverySession({
+            oracle: new HealthOracle(new SandboxManager(), {
+                diagnostics: this.recoveryDiagnostics,
+                onOutput: (message) => this.output.appendLine(`[dsh:recovery] ${message}`),
+            }),
+            ledger: this.recoveryLedger,
+            fixes: this.recoveryFixes,
+            maxBoots: 8,
+            allowBundleIsolation: () => this.configuration().get<boolean>("recovery.autoPersistBundleIsolation", true),
+            onStatus: (status) => this.publishRecoveryStatus(status),
+            onLog: (message) => this.output.appendLine(`[dsh:recovery] ${message}`),
+        });
         this.apiClient = new RemoteUnaryClient({
             baseUrl: () => this.baseUrl,
             requestHeaders: () => this.requestHeaders(),
@@ -1157,6 +1191,41 @@ export class DshRuntime implements vscode.Disposable {
 
     public getStatus(): RuntimeStatus {
         return { ...this.status };
+    }
+
+    public getRecoveryStatus(): RecoveryStatusView | undefined {
+        return this.recoverySession.getStatus();
+    }
+
+    /** Root of the per-session recovery logs (`recovery/logs/<sessionId>/`). */
+    public getRecoveryLogsDirectory(): string {
+        return this.recoveryDiagnostics.logsDirectory;
+    }
+
+    public cancelRecovery(): void {
+        this.recoverySession.cancel();
+    }
+
+    public async exportRecoveryDiagnostics(): Promise<string> {
+        const loaded = await this.recoveryLedger.read();
+        return this.recoveryDiagnostics.export(loaded.state, this.lastRecoveryComposition, loaded.corrupt);
+    }
+
+    public async restoreRecovery(): Promise<string[]> {
+        if (this.child || this.baseUrl) {
+            throw new Error(t("Stop dsh Runtime before restoring automatic recovery changes."));
+        }
+        // Command discovery keeps `startPromise` live while `child`/`baseUrl` are still
+        // unset, and an automatic recovery can be mid-flight; restoring then would race
+        // those paths over the ledger and the profile manifest.
+        if (this.startPromise || this.stopPromise || this.automaticRecoveryInFlight) {
+            throw new Error(t("Stop dsh Runtime before restoring automatic recovery changes."));
+        }
+        const restored = await this.recoveryFixes.restore();
+        if (restored.length) {
+            this.output.appendLine(`[dsh:recovery] restored fixes: ${restored.join(", ")}`);
+        }
+        return restored;
     }
 
     public getUrl(): string | undefined {
@@ -1349,12 +1418,43 @@ export class DshRuntime implements vscode.Disposable {
             return await this.startPromise;
         } catch (error) {
             if (abort.signal.aborted) throw error;
+            if (!fromRecovery && this.recoveryEnabled() && this.lastRecoveryComposition) {
+                try {
+                    const outcome = await this.runAutomaticRecovery(
+                        workspaceRoot,
+                        error instanceof Error ? error.message : String(error),
+                        abort.signal,
+                    );
+                    if (outcome.status === "retry" || outcome.status === "candidate") {
+                        try {
+                            const url = await this.startInternal(workspaceRoot, abort.signal);
+                            await this.recoverySession.confirm(
+                                this.lastRecoveryComposition ?? outcome.composition ?? this.lastRecoveryComposition!,
+                                outcome.attribution,
+                            );
+                            this.runtimeRecoveryAttempts = 0;
+                            return url;
+                        } catch (retryError) {
+                            await this.recoverySession.fail(
+                                retryError instanceof Error ? retryError.message : String(retryError),
+                            );
+                            error = retryError;
+                        }
+                    }
+                } catch (recoveryError) {
+                    this.output.appendLine(`[dsh:recovery] automatic recovery failed: ${String(recoveryError)}`);
+                }
+            }
             if (!this.startedByExtension) {
                 this.baseUrl = undefined;
                 this.launchUrl = undefined;
                 this.clearRuntimeAuthentication();
             }
-            this.setStatus({ state: "error", message: error instanceof Error ? error.message : String(error) });
+            this.setStatus({
+                state: "error",
+                message: error instanceof Error ? error.message : String(error),
+                recovery: this.recoverySession.getStatus(),
+            });
             throw error;
         } finally {
             this.startPromise = undefined;
@@ -2318,6 +2418,7 @@ export class DshRuntime implements vscode.Disposable {
             this.setStatus({ state: "starting", message: t("Starting dsh web...") });
         }
 
+        this.lastRecoveryComposition = undefined;
         let command = configuration.get<string>("command", "auto").trim() || "auto";
         const configuredArgs = configuredLaunchArgs(configuration, command);
         let args = [...configuredArgs];
@@ -2392,8 +2493,9 @@ export class DshRuntime implements vscode.Disposable {
         }
         checkStarting();
         if (enableCompaction && isWebProfileArgs(args)) {
-            this.compactionPatchPath = join(tmpdir(), `dsh-vscode-${process.pid}-compaction.patch.yml`);
+            this.compactionPatchPath = join(this.recoveryLedger.directory, "compaction.patch.yml");
             try {
+                await mkdir(this.recoveryLedger.directory, { recursive: true });
                 await writeFile(
                     this.compactionPatchPath,
                     "- id: compaction-basic\n  disabled: false\n\n- id: command-compact\n  disabled: false\n",
@@ -2413,6 +2515,43 @@ export class DshRuntime implements vscode.Disposable {
             // normal 3080 default for discovery while still working when it is
             // occupied by another service or Runtime.
             args.push("--port", String(configuredPort > 0 ? configuredPort : 0));
+        }
+        try {
+            args = await this.recoveryFixes.filterLaunchArgs(args);
+        } catch (error) {
+            if (!(error instanceof RecoveryLedgerCorruptError)) throw error;
+            // A damaged ledger.json blocks applied-fix filtering only; design 11.3 keeps the
+            // original file and continues in diagnostic mode, so start with the unfiltered args.
+            this.output.appendLine(`[dsh:recovery] ignoring damaged recovery ledger: ${error.message}`);
+        }
+        try {
+            const patchPaths = patchPathsFromArgs(args);
+            const compactionPatchPath = this.compactionPatchPath;
+            const extensionOverlays = compactionPatchPath &&
+                patchPaths.some((path) => samePath(path, compactionPatchPath))
+                ? [compactionPatchPath]
+                : [];
+            this.lastRecoveryComposition = await buildComposition({
+                command,
+                resolvedPath: await findExecutable(command),
+                source: describeSource(launcher.source),
+                version: launchVersion,
+                launcherArgs: launcher.args,
+                appArgs: args,
+                workspaceRoot,
+                dshHome: process.env.DSH_HOME || join(homedir(), ".dsh"),
+                profile: profileNameFromArgs(args),
+                extensionOverlayPaths: extensionOverlays,
+            });
+            if (this.runtimeLock) {
+                this.runtimeLock.record.compositionHash = this.lastRecoveryComposition.compositionHash;
+                const recoverySessionId = this.recoverySession.getSessionId();
+                if (recoverySessionId) this.runtimeLock.record.recoverySessionId = recoverySessionId;
+                await this.publishRuntimeLockUrl();
+            }
+        } catch (error) {
+            this.lastRecoveryComposition = undefined;
+            this.output.appendLine(`[dsh:recovery] unable to capture launch composition: ${String(error)}`);
         }
 
         const configuredNpxTimeout = configuration.get<number>("npxTimeoutMs", DEFAULT_NPX_TIMEOUT_MS);
@@ -2597,7 +2736,20 @@ export class DshRuntime implements vscode.Disposable {
                 }
                 return url;
             } catch (error) {
-                await this.terminate(child);
+                try {
+                    await this.terminate(child);
+                } catch (cleanupError) {
+                    // The launch/readiness error is the primary diagnosis.
+                    // In particular, an exited Windows wrapper cannot prove
+                    // descendant ownership, so that cleanup limitation must
+                    // never replace the real DSH stderr or exit reason.
+                    this.output.appendLine(
+                        `[dsh] launch cleanup was not fully verified: ${String(cleanupError)}`,
+                    );
+                    if (!(cleanupError instanceof RuntimeDescendantOwnershipUnknownError)) {
+                        this.output.appendLine(`[dsh] preserving primary Runtime launch failure: ${String(error)}`);
+                    }
+                }
                 if (this.child === child) this.child = undefined;
                 this.baseUrl = undefined;
                 this.launchUrl = undefined;
@@ -2679,6 +2831,13 @@ export class DshRuntime implements vscode.Disposable {
         this.baseUrl = url;
         this.setStatus({ state: "running", url });
         this.harnessState.start();
+        if (this.lastRecoveryComposition) {
+            try {
+                await this.recoverySession.reconcileHealthyStart(this.lastRecoveryComposition);
+            } catch (error) {
+                this.output.appendLine(`[dsh:recovery] unable to close interrupted recovery: ${String(error)}`);
+            }
+        }
         return url;
     }
 
@@ -3121,6 +3280,9 @@ export class DshRuntime implements vscode.Disposable {
 
     /** Cancel automatic recovery when an explicit lifecycle action takes over. */
     private cancelRuntimeRecovery(): void {
+        // Abort the in-flight session too: otherwise recover() still resolves as
+        // retry/candidate and restarts the Runtime, undoing the user's stop.
+        this.recoverySession.cancel();
         ++this.runtimeRecoveryGeneration;
         if (this.runtimeRecoveryTimer !== undefined) {
             clearTimeout(this.runtimeRecoveryTimer);
@@ -3195,8 +3357,9 @@ export class DshRuntime implements vscode.Disposable {
             const message = t("dsh web exited unexpectedly after {attempts} recovery attempts. Run DSH: Restart dsh Web to try again.", {
                 attempts: maxAttempts,
             });
-            this.setStatus({ state: "error", message });
             this.output.appendLine(`[dsh] Runtime recovery exhausted after ${maxAttempts} attempts`);
+            this.beginUnexpectedExitRecovery(workspaceRoot);
+            if (!this.automaticRecoveryInFlight) this.setStatus({ state: "error", message });
             return;
         }
 
@@ -3251,6 +3414,156 @@ export class DshRuntime implements vscode.Disposable {
             lock.record.runtimePid === child.pid) {
             this.terminatedRuntimeLock = { ownerId: lock.record.ownerId, runtimePid: child.pid };
         }
+    }
+
+    private recoveryEnabled(): boolean {
+        return this.configuration().get<boolean>("recovery.enabled", true);
+    }
+
+    private async runAutomaticRecovery(
+        workspaceRoot: string | undefined,
+        failureMessage: string,
+        signal?: AbortSignal,
+    ): Promise<RecoveryOutcome> {
+        if (!workspaceRoot || !this.lastRecoveryComposition) {
+            return {
+                status: "unrecoverable",
+                sessionId: "composition-unavailable",
+                message: "Automatic recovery could not capture the local launch composition.",
+            };
+        }
+        if (this.automaticRecoveryInFlight) {
+            return {
+                status: "unrecoverable",
+                sessionId: this.recoverySession.getSessionId() ?? "recovery-busy",
+                message: "Another automatic recovery session is already running.",
+            };
+        }
+        this.automaticRecoveryInFlight = true;
+        this.output.appendLine(`[dsh:recovery] starting automatic recovery: ${failureMessage}`);
+        try {
+            return await this.recoverySession.recover(
+                this.lastRecoveryComposition,
+                failureMessage,
+                signal,
+            );
+        } finally {
+            this.automaticRecoveryInFlight = false;
+        }
+    }
+
+    /**
+     * Design 745-756: the fixed first step of recovery. A healthy Runtime whose recorded
+     * composition hash matches the one we failed with is adopted outright instead of being
+     * searched for. A mismatched or unhashed Runtime is NOT a safe recovery source (design 69),
+     * so it is reported and left alone rather than adopted or killed.
+     */
+    private async adoptExistingRuntime(composition: CompositionDescriptor): Promise<boolean> {
+        const configuredPort = this.configuration().get<number>("serverPort", 0);
+        let endpoint: RuntimeEndpoint | undefined;
+        try {
+            endpoint = await this.findExistingRuntime(configuredPort);
+        } catch (error) {
+            this.output.appendLine(`[dsh:recovery] adoption probe failed: ${String(error)}`);
+            return false;
+        }
+        if (!endpoint) return false;
+        const recorded = this.runtimeLock?.record?.compositionHash;
+        if (recorded === undefined) {
+            this.output.appendLine(
+                "[dsh:recovery] a healthy Runtime answered but carries no composition evidence; " +
+                "it is reported, not adopted (design 69).",
+            );
+            return false;
+        }
+        if (recorded !== composition.compositionHash) {
+            this.output.appendLine(
+                "[dsh:recovery] a healthy Runtime answered for a different composition; " +
+                "adoption is ambiguous, so recovery search continues (design 745-756).",
+            );
+            return false;
+        }
+        this.setRuntimeEndpoint(endpoint);
+        this.startedByExtension = false;
+        this.setStatus({ state: "running", url: endpoint.baseUrl });
+        this.harnessState.start();
+        await this.recoverySession.confirm(composition);
+        this.output.appendLine(`[dsh:recovery] adopted an already-healthy Runtime at ${endpoint.baseUrl}`);
+        return true;
+    }
+    private beginUnexpectedExitRecovery(workspaceRoot: string | undefined): void {
+        if (
+            this.disposed ||
+            this.automaticRecoveryInFlight ||
+            !this.recoveryEnabled() ||
+            !workspaceRoot ||
+            !this.lastRecoveryComposition
+        ) {
+            return;
+        }
+        const composition = this.lastRecoveryComposition;
+        this.automaticRecoveryInFlight = true;
+        void (async () => {
+            const failure = t("dsh web exited unexpectedly after {attempts} recovery attempts.", {
+                attempts: RUNTIME_RECOVERY_DELAYS_MS.length,
+            });
+            try {
+                // Design 745-756 / 64: adoption is the FIRST step of recovery, not an
+                // optimisation of the normal start path. When a healthy Runtime for this exact
+                // composition is already listening (the previous restart did come up but the
+                // extension never learned its URL), adopting it costs nothing. Searching first
+                // would boot the same composition in a sandbox and then spend a real start on a
+                // Runtime that was already healthy.
+                if (await this.adoptExistingRuntime(composition)) {
+                    return;
+                }
+                const outcome = await this.recoverySession.recover(composition, failure);
+                if (outcome.status !== "retry" && outcome.status !== "candidate") {
+                    this.setStatus({
+                        state: "error",
+                        message: outcome.message,
+                        recovery: this.recoverySession.getStatus(),
+                    });
+                    return;
+                }
+                try {
+                    await this.startWithRecovery(workspaceRoot, true);
+                    await this.recoverySession.confirm(
+                        this.lastRecoveryComposition ?? outcome.composition ?? composition,
+                        outcome.attribution,
+                    );
+                    this.runtimeRecoveryAttempts = 0;
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    await this.recoverySession.fail(message);
+                    this.setStatus({
+                        state: "error",
+                        message,
+                        recovery: this.recoverySession.getStatus(),
+                    });
+                }
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                this.output.appendLine(`[dsh:recovery] unexpected-exit recovery failed: ${message}`);
+                this.setStatus({ state: "error", message });
+            } finally {
+                this.automaticRecoveryInFlight = false;
+            }
+        })();
+    }
+
+    private publishRecoveryStatus(status: RecoveryStatusView): void {
+        const state: RuntimeStatus["state"] =
+            status.phase === "recovered"
+                ? "running"
+                : status.phase === "unrecoverable" || status.phase === "cancelled"
+                    ? "error"
+                    : "recovering";
+        this.setStatus({
+            state,
+            message: status.summary,
+            recovery: { ...status },
+        });
     }
 
     private configuration(): vscode.WorkspaceConfiguration {

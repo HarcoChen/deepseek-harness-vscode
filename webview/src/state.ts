@@ -117,6 +117,7 @@ export type SessionStatsState = Pick<ChatViewState, "sessionStats">;
 export function statusLabel(status: RuntimeStatus): string {
     if (status.state === "running") return t("Running");
     if (status.state === "starting") return t("Starting");
+    if (status.state === "recovering") return t("Recovering");
     if (status.state === "error") return t("Error");
     return t("Stopped");
 }
