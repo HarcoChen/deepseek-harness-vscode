@@ -195,7 +195,27 @@ export class VariantEngine {
                 add(variant);
             }
         }
+        // Design 7.1: keep enough boots in reserve that the single-shot V1/V4 probes and the
+        // re-add confirmation still fit. V3's allowance is `1 + ceil(log2(n)) + 1` for n user
+        // bundles: one all-removed baseline, the bisection steps, and the confirmation. The
+        // planner is the only place n is known, so it computes `reserved` here rather than
+        // leaving the hardcoded placeholder that nothing ever read.
         const limit = Math.max(1, budget.maxBoots);
+        const plannedBundles = composition.bundles
+            .filter((bundle) => bundle.selected && bundle.origin === "profile-dependency").length;
+        // Design 571: when the formula exceeds the budget, record the shortfall and truncate by
+        // discriminating power instead of silently growing the cap. The planner already emits
+        // variants most-discriminating-first (V1, then V3 baseline/halves/singletons, then V4),
+        // so a plain slice is that order.
+        budget.reserved = {
+            v1: 1,
+            v3: 1 + Math.ceil(Math.log2(Math.max(1, plannedBundles))) + 1,
+            v4: 1,
+            confirmation: 1,
+        };
+        if (budget.reserved.v1 + budget.reserved.v3 + budget.reserved.v4 + budget.reserved.confirmation > limit) {
+            budget.skipped.push({ variantId: "budget-shortfall", reason: "budget" });
+        }
         for (const dropped of variants.slice(limit)) {
             budget.skipped.push({ variantId: dropped.id, reason: "budget" });
         }

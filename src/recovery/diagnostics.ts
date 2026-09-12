@@ -8,7 +8,11 @@ import type {
     RecoveryLedgerState,
 } from "./types";
 
-const MAX_BOOT_BYTES = 240 * 1024;
+// Design 872 / 1063: 2 MB per generation, with the current generation never rotated away and
+// at least the last 32 KB always retained. The previous 240 KB was roughly 8x smaller than the
+// documented cap, so a chatty DSH boot lost its middle chunks — the part that usually carries
+// the crash evidence — long before the design expected any truncation.
+const MAX_BOOT_BYTES = 2 * 1024 * 1024;
 const MIN_TAIL_BYTES = 32 * 1024;
 
 export function redactRecoveryText(value: string): string {

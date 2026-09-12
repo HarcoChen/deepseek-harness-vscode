@@ -422,7 +422,11 @@ export class RecoverySession {
         return {
             maxBoots: this.maxBoots,
             usedBoots: 0,
-            reserved: { v1: 1, v3: 5, v4: 1, confirmation: 1 },
+            // Design 7.1: V1 and V4 are single shots, confirmation is one more, and V3 gets
+            // `1 + ceil(log2(n)) + 1` — the all-removed baseline, the bisection steps and the
+            // re-add confirmation. The V3 figure depends on the user's bundle count, so the
+            // planner computes it once it knows n (see VariantEngine.plan).
+            reserved: { v1: 1, v3: 0, v4: 1, confirmation: 1 },
             skipped: [],
         };
     }
