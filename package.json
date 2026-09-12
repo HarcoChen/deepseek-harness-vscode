@@ -664,6 +664,7 @@
         "check:webview": "tsc --noEmit -p ./webview/tsconfig.json",
         "test": "npm run check:webview && npm run compile && node --test test/*.test.js",
         "verify:recovery": "node ./scripts/verify-recovery.mjs",
+        "verify:recovery-e2e": "node ./scripts/verify-e2e-recovery.mjs",
         "package": "npm run compile && vsce package",
         "release": "node ./scripts/release.mjs"
     },
