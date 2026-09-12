@@ -1197,6 +1197,11 @@ export class DshRuntime implements vscode.Disposable {
         return this.recoverySession.getStatus();
     }
 
+    /** Root of the per-session recovery logs (`recovery/logs/<sessionId>/`). */
+    public getRecoveryLogsDirectory(): string {
+        return this.recoveryDiagnostics.logsDirectory;
+    }
+
     public cancelRecovery(): void {
         this.recoverySession.cancel();
     }
@@ -3447,6 +3452,45 @@ export class DshRuntime implements vscode.Disposable {
         }
     }
 
+    /**
+     * Design 745-756: the fixed first step of recovery. A healthy Runtime whose recorded
+     * composition hash matches the one we failed with is adopted outright instead of being
+     * searched for. A mismatched or unhashed Runtime is NOT a safe recovery source (design 69),
+     * so it is reported and left alone rather than adopted or killed.
+     */
+    private async adoptExistingRuntime(composition: CompositionDescriptor): Promise<boolean> {
+        const configuredPort = this.configuration().get<number>("serverPort", 0);
+        let endpoint: RuntimeEndpoint | undefined;
+        try {
+            endpoint = await this.findExistingRuntime(configuredPort);
+        } catch (error) {
+            this.output.appendLine(`[dsh:recovery] adoption probe failed: ${String(error)}`);
+            return false;
+        }
+        if (!endpoint) return false;
+        const recorded = this.runtimeLock?.record?.compositionHash;
+        if (recorded === undefined) {
+            this.output.appendLine(
+                "[dsh:recovery] a healthy Runtime answered but carries no composition evidence; " +
+                "it is reported, not adopted (design 69).",
+            );
+            return false;
+        }
+        if (recorded !== composition.compositionHash) {
+            this.output.appendLine(
+                "[dsh:recovery] a healthy Runtime answered for a different composition; " +
+                "adoption is ambiguous, so recovery search continues (design 745-756).",
+            );
+            return false;
+        }
+        this.setRuntimeEndpoint(endpoint);
+        this.startedByExtension = false;
+        this.setStatus({ state: "running", url: endpoint.baseUrl });
+        this.harnessState.start();
+        await this.recoverySession.confirm(composition);
+        this.output.appendLine(`[dsh:recovery] adopted an already-healthy Runtime at ${endpoint.baseUrl}`);
+        return true;
+    }
     private beginUnexpectedExitRecovery(workspaceRoot: string | undefined): void {
         if (
             this.disposed ||
@@ -3464,6 +3508,15 @@ export class DshRuntime implements vscode.Disposable {
                 attempts: RUNTIME_RECOVERY_DELAYS_MS.length,
             });
             try {
+                // Design 745-756 / 64: adoption is the FIRST step of recovery, not an
+                // optimisation of the normal start path. When a healthy Runtime for this exact
+                // composition is already listening (the previous restart did come up but the
+                // extension never learned its URL), adopting it costs nothing. Searching first
+                // would boot the same composition in a sandbox and then spend a real start on a
+                // Runtime that was already healthy.
+                if (await this.adoptExistingRuntime(composition)) {
+                    return;
+                }
                 const outcome = await this.recoverySession.recover(composition, failure);
                 if (outcome.status !== "retry" && outcome.status !== "candidate") {
                     this.setStatus({

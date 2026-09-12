@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import * as vscode from "vscode";
 import {
     AgentStatusPresentationRegistry,
@@ -150,7 +151,33 @@ export function activate(context: vscode.ExtensionContext): DshExtensionApi {
         vscode.commands.registerCommand("dsh.recovery.cancel", () => {
             runtime.cancelRecovery();
         }),
-        vscode.commands.registerCommand("dsh.recovery.openDiagnostics", () => output.show(true)),
+        vscode.commands.registerCommand("dsh.recovery.openDiagnostics", async () => {
+            // Design 968: this command opens the CURRENT session's details and logs. It used to
+            // be a byte-for-byte duplicate of dsh.openLogs, so the two entries in the command
+            // palette did the same thing and neither showed any recovery detail.
+            const status = runtime.getRecoveryStatus();
+            output.show(true);
+            if (status === undefined) {
+                output.appendLine(t("No DSH recovery session has run in this window."));
+                return;
+            }
+            const details = [
+                "sessionId=" + status.sessionId,
+                "phase=" + status.phase,
+                "usedBoots=" + status.usedBoots + "/" + status.maxBoots,
+                "currentVariant=" + (status.currentVariant ?? "-"),
+                "canRestore=" + status.canRestore,
+                "summary=" + (status.summary ?? "-"),
+            ].join("\n");
+            output.appendLine("[dsh:recovery] session details\n" + details);
+            // Reveal the per-session log folder when it exists, so "and logs" is literal.
+            const sessionLogs = vscode.Uri.file(join(runtime.getRecoveryLogsDirectory(), status.sessionId));
+            try {
+                await vscode.commands.executeCommand("revealFileInOS", sessionLogs);
+            } catch (error) {
+                output.appendLine("[dsh:recovery] session log folder unavailable: " + String(error));
+            }
+        }),
         vscode.commands.registerCommand("dsh.recovery.exportDiagnostics", async () => {
             await runCommand(t("Export recovery diagnostics"), async () => {
                 const path = await runtime.exportRecoveryDiagnostics();
